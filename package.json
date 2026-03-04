@@ -1,0 +1,43 @@
+{
+  "name": "cuemap-mcp",
+  "version": "0.1.0",
+  "description": "MCP server for CueMap",
+  "main": "build/index.js",
+  "bin": {
+    "cuemap-mcp": "./build/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "start": "node build/index.js",
+    "dev": "tsc --watch"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "cuemap",
+    "memory",
+    "rag"
+  ],
+  "author": "Kaan Demirel",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/cuemap-dev/cuemap-mcp.git"
+  },
+  "type": "commonjs",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.27.1",
+    "cuemap": "^0.6.4",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@types/node": "^25.3.3",
+    "typescript": "^5.9.3"
+  },
+  "optionalDependencies": {
+    "@cuemap/engine-darwin-arm64": "^0.6.4",
+    "@cuemap/engine-darwin-x64": "^0.6.4",
+    "@cuemap/engine-linux-x64": "^0.6.4",
+    "@cuemap/engine-win32-x64": "^0.6.4"
+  }
+}
