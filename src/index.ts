@@ -25,7 +25,7 @@ function getCuemapBinaryPath(): string | null {
     try {
         const platform = os.platform();
         const arch = os.arch();
-        const pkgName = `@cuemap/engine-${platform}-${arch}`;
+        const pkgName = `@cuemap-dev/engine-${platform}-${arch}`;
         const resolved = require.resolve(`${pkgName}/package.json`);
         const binPath = path.join(path.dirname(resolved), "bin", "cuemap");
         if (fs.existsSync(binPath)) return binPath;
