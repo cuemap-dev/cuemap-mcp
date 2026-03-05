@@ -12,7 +12,7 @@ You do **not** need to install or run the CueMap CLI manually. The correct pre-c
 
 ```bash
 # Global installation makes the `cuemap-mcp` command available
-npm install -g @cuemap-dev/cuemap-mcp
+npm install -g cuemap-mcp
 ```
 
 *(Note: Ensure your package manager is configured to download `optionalDependencies` so the local Rust binary is included).*
@@ -38,7 +38,7 @@ To use this MCP server with your AI assistant, add it to your assistant's MCP co
       "command": "npx",
       "args": [
         "-y",
-        "@cuemap-dev/cuemap-mcp"
+        "cuemap-mcp"
       ],
       "env": {
         "CUEMAP_PORT": "8080"
