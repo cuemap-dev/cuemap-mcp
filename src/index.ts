@@ -107,9 +107,11 @@ async function main() {
             try {
                 const pName = args.projectName || path.basename(args.path);
 
-                const _projectsRes = await client.listProjects();
-                const projects = Array.isArray(_projectsRes) ? _projectsRes : (_projectsRes as any).projects || [];
-                if (!projects.includes(pName)) {
+                const _projectsRes: any = await client.listProjects();
+                // Engine returns {projects: [{project_id: "...", ...}, ...]}
+                const rawList = Array.isArray(_projectsRes) ? _projectsRes : (_projectsRes?.projects || []);
+                const projectIds = rawList.map((p: any) => typeof p === 'string' ? p : p.project_id);
+                if (!projectIds.includes(pName)) {
                     await client.createProject(pName);
                 }
 
