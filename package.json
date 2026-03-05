@@ -1,6 +1,6 @@
 {
   "name": "cuemap-mcp",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "MCP server for CueMap",
   "main": "build/index.js",
   "bin": {
@@ -27,7 +27,7 @@
   "type": "commonjs",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.27.1",
-    "cuemap": "file:../typescript-sdk",
+    "cuemap": "^0.6.4",
     "zod": "^4.3.6"
   },
   "devDependencies": {

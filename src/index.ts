@@ -107,7 +107,8 @@ async function main() {
             try {
                 const pName = args.projectName || path.basename(args.path);
 
-                const projects = await client.listProjects();
+                const _projectsRes = await client.listProjects();
+                const projects = Array.isArray(_projectsRes) ? _projectsRes : (_projectsRes as any).projects || [];
                 if (!projects.includes(pName)) {
                     await client.createProject(pName);
                 }
