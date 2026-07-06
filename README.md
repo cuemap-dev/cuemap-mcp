@@ -59,14 +59,21 @@ To use this MCP server with your AI assistant, add it to your assistant's MCP co
   - `limit` (number, optional): Maximum results to return (default: 10).
   - `projects` (string[], optional): List of project IDs to scope the search to. Multiple enables cross-project queries.
   - `cues` (string[], optional): Specific cue tags to filter the search.
+  - `query_time` (string, optional): Timestamp or natural-language time anchor for v0.7 temporal query intent.
   - `depth` (number, optional): Depth of multi-hop recall expander (default: 1).
+  - `expansion_depth` (number, optional): Alias/cue expansion depth (default: 1).
   - `auto_reinforce` (boolean, optional): Automatically reinforce retrieved memories (default: false).
   - `min_intersection` (number, optional): Minimum required cue intersection count (default: 0).
   - `explain` (boolean, optional): Include scoring explanation data in results (default: false).
-  - `disable_pattern_completion` (boolean, optional): Skip pattern completion inference.
+  - `trace_timing` (boolean, optional): Include v0.7 timing diagnostics.
   - `disable_salience_bias` (boolean, optional): Disable salience scoring bias.
-  - `disable_systems_consolidation` (boolean, optional): Skip returning summary/consolidated memories.
-  - `disable_alias_expansion` (boolean, optional): Disable lexicon synonym injection during querying.
+  - `disable_alias_expansion` (boolean, optional): Disable lexicon synonym injection during querying (default: true).
+  - `cuepacks` (string[], optional): Cuepack names to apply during query-intent expansion.
+  - `parent_fusion` (`off` | `auto` | `force`, optional): Chunk-parent fusion mode.
+  - `ordered_reconstruction` (`off` | `auto` | `force`, optional): Ordered session reconstruction mode.
+  - `evidence_coverage` (`off` | `auto` | `force`, optional): Multi-evidence coverage mode.
+  - `disable_cuebridge_artifacts` (boolean, optional): Disable CueBridge artifact expansion.
+  - `cuebridge_gap_limit` (number, optional): Maximum CueBridge gap expansions.
 
 ## License
 

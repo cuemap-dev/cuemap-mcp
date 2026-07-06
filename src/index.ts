@@ -151,46 +151,82 @@ async function main() {
     server.registerTool(
         "cuemap_recall",
         {
-            description: "Recall context about a codebase from a CueMap integerated brain. Uses natural language and semantic search to find relevant information.",
+            description: "Recall context about a codebase from a CueMap integrated brain. Uses natural language and associative search to find relevant information.",
             inputSchema: z.object({
                 query: z.string().describe("The natural language query to search the codebase memory for."),
                 limit: z.number().optional().describe("Optional limit on the number of results to return. Default is 10."),
                 projects: z.array(z.string()).optional().describe("Optional list of project IDs to scope the search to. Provide multiple for cross-project recall. If not provided, searches the default project."),
                 cues: z.array(z.string()).optional().describe("Optional list of specific cues/tags to filter the search."),
+                query_time: z.string().optional().describe("Optional timestamp or natural-language time anchor used by v0.7 temporal query intent."),
                 depth: z.number().optional().describe("Depth of multi-hop recall. Default is 1."),
+                expansion_depth: z.number().optional().describe("Alias/cue expansion depth. Default is 1."),
                 auto_reinforce: z.boolean().optional().describe("Automatically reinforce retrieved memories. Default is false."),
                 min_intersection: z.number().optional().describe("Minimum intersection count for retrieval. Default is 0."),
                 explain: z.boolean().optional().describe("Include explain component for debug information in results. Default is false."),
-                disable_pattern_completion: z.boolean().optional().describe("Disable pattern completion inference. Default is false."),
+                trace_timing: z.boolean().optional().describe("Include v0.7 timing diagnostics in the response. Default is false."),
                 disable_salience_bias: z.boolean().optional().describe("Disable salience bias scoring. Default is false."),
-                disable_systems_consolidation: z.boolean().optional().describe("Disable systems consolidation (exclude summaries). Default is false."),
-                disable_alias_expansion: z.boolean().optional().describe("Disable alias expansion during querying. Default is false."),
+                disable_alias_expansion: z.boolean().optional().describe("Disable alias expansion during querying. Default is true."),
+                cuepacks: z.array(z.string()).optional().describe("Optional cuepack names to apply during query-intent expansion."),
+                parent_fusion: z.enum(["off", "auto", "force"]).optional().describe("Parent fusion mode for chunk-parent reconstruction. Default is off."),
+                parent_fusion_limit: z.number().optional().describe("Candidate limit for parent fusion. Default is 80."),
+                parent_fusion_min_chunks: z.number().optional().describe("Minimum sibling chunks required for parent fusion. Default is 2."),
+                ordered_reconstruction: z.enum(["off", "auto", "force"]).optional().describe("Ordered session reconstruction mode. Default is off."),
+                ordered_reconstruction_limit: z.number().optional().describe("Result scan limit for ordered reconstruction. Default is 80."),
+                ordered_session_scan_limit: z.number().optional().describe("Per-session scan limit for ordered reconstruction. Default is 4096."),
+                ordered_max_sessions: z.number().optional().describe("Maximum sessions considered for ordered reconstruction. Default is 3."),
+                evidence_coverage: z.enum(["off", "auto", "force"]).optional().describe("Evidence coverage mode for multi-evidence answers. Default is off."),
+                evidence_coverage_limit: z.number().optional().describe("Result scan limit for evidence coverage. Default is 100."),
+                evidence_coverage_session_scan_limit: z.number().optional().describe("Per-session scan limit for evidence coverage. Default is 4096."),
+                evidence_coverage_max_sessions: z.number().optional().describe("Maximum sessions considered for evidence coverage. Default is 3."),
+                disable_cuebridge_artifacts: z.boolean().optional().describe("Disable CueBridge artifact expansion. Default is false."),
+                cuebridge_gap_limit: z.number().optional().describe("Maximum CueBridge gap expansions. Default is 6."),
             }),
         },
         async (args) => {
             try {
                 const {
-                    query, limit = 10, projects, cues,
-                    depth = 1, auto_reinforce = false, min_intersection,
-                    explain = false, disable_pattern_completion = false,
-                    disable_salience_bias = false, disable_systems_consolidation = false,
-                    disable_alias_expansion = false
+                    query, limit = 10, projects, cues, query_time,
+                    depth = 1, expansion_depth = 1, auto_reinforce = false, min_intersection,
+                    explain = false, trace_timing = false,
+                    disable_salience_bias = false, disable_alias_expansion = true,
+                    cuepacks, parent_fusion = "off", parent_fusion_limit = 80,
+                    parent_fusion_min_chunks = 2, ordered_reconstruction = "off",
+                    ordered_reconstruction_limit = 80, ordered_session_scan_limit = 4096,
+                    ordered_max_sessions = 3, evidence_coverage = "off",
+                    evidence_coverage_limit = 100, evidence_coverage_session_scan_limit = 4096,
+                    evidence_coverage_max_sessions = 3, disable_cuebridge_artifacts = false,
+                    cuebridge_gap_limit = 6
                 } = args;
 
-                const results = await client.recall(
-                    query,
+                const results = await client.recall({
+                    query_text: query,
                     cues,
                     projects,
                     limit,
                     depth,
+                    query_time,
+                    expansion_depth,
                     auto_reinforce,
                     min_intersection,
                     explain,
-                    disable_pattern_completion,
+                    trace_timing,
                     disable_salience_bias,
-                    disable_systems_consolidation,
-                    disable_alias_expansion
-                );
+                    disable_alias_expansion,
+                    cuepacks,
+                    parent_fusion,
+                    parent_fusion_limit,
+                    parent_fusion_min_chunks,
+                    ordered_reconstruction,
+                    ordered_reconstruction_limit,
+                    ordered_session_scan_limit,
+                    ordered_max_sessions,
+                    evidence_coverage,
+                    evidence_coverage_limit,
+                    evidence_coverage_session_scan_limit,
+                    evidence_coverage_max_sessions,
+                    disable_cuebridge_artifacts,
+                    cuebridge_gap_limit,
+                });
 
                 let items: any[] = [];
 
