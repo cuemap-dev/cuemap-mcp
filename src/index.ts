@@ -149,6 +149,61 @@ async function main() {
     );
 
     server.registerTool(
+        "cuemap_add",
+        {
+            description: "Store a natural-language memory in an explicit CueMap project. Creates the project if it does not exist, then applies deterministic cue extraction plus any supplied cues and metadata.",
+            inputSchema: z.object({
+                content: z.string().min(1).describe("The natural-language memory content to store."),
+                project: z.string().min(1).describe("The project ID that will own the memory."),
+                cues: z.array(z.string()).optional().describe("Optional explicit cues/tags to associate with the memory."),
+                metadata: z.record(z.string(), z.unknown()).optional().describe("Optional JSON metadata to store with the memory."),
+                source_key: z.string().optional().describe("Optional stable source key for deterministic upsert/deduplication."),
+                cuepacks: z.array(z.string()).optional().describe("Optional CuePack names to apply during deterministic cue extraction."),
+                disable_temporal_chunking: z.boolean().optional().describe("Disable temporal chunking for this memory. Default is false."),
+                async_ingest: z.boolean().optional().describe("Process ingestion in the background and return immediately. Default is false."),
+            })
+        },
+        async (args) => {
+            try {
+                const projects: any[] = await client.listProjects();
+                const projectIds = projects.map((p: any) => typeof p === "string" ? p : p.project_id);
+                if (!projectIds.includes(args.project)) {
+                    await client.createProject(args.project);
+                }
+
+                const projectClient = new CueMap({ url: CUEMAP_URL, projectId: args.project });
+                const memoryId = await projectClient.add(
+                    args.content,
+                    args.cues || [],
+                    args.metadata,
+                    args.disable_temporal_chunking || false,
+                    {
+                        sourceKey: args.source_key,
+                        cuepacks: args.cuepacks,
+                        asyncIngest: args.async_ingest,
+                    }
+                );
+
+                return {
+                    content: [{
+                        type: "text" as const,
+                        text: `Stored memory ${memoryId} in CueMap project ${args.project}.`,
+                    }],
+                };
+            } catch (error: any) {
+                console.error("Error adding CueMap memory", error);
+                return {
+                    content: [{
+                        type: "text" as const,
+                        text: `Error executing cuemap_add tool: ${error?.message || "Unknown error"}`,
+                    }],
+                    isError: true,
+                };
+            }
+        }
+    );
+
+    server.registerTool(
         "cuemap_recall",
         {
             description: "Recall context about a codebase from a CueMap integrated brain. Uses natural language and associative search to find relevant information.",

@@ -54,6 +54,16 @@ To use this MCP server with your AI assistant, add it to your assistant's MCP co
   - `path` (string): Absolute path to the local repository.
   - `projectName` (string, optional): The ID of the project to create. Defaults to the folder name of the path.
 
+- **`cuemap_add`**: Stores one natural-language memory in an explicit project. The project is created automatically if it does not exist.
+  - `content` (string): Memory content to store.
+  - `project` (string): Project ID that will own the memory.
+  - `cues` (string[], optional): Explicit cues/tags to associate with the memory.
+  - `metadata` (object, optional): JSON metadata to store with the memory.
+  - `source_key` (string, optional): Stable source key for deterministic upsert/deduplication.
+  - `cuepacks` (string[], optional): CuePack names to apply during deterministic cue extraction.
+  - `disable_temporal_chunking` (boolean, optional): Disable temporal chunking for this memory.
+  - `async_ingest` (boolean, optional): Process ingestion in the background and return immediately.
+
 - **`cuemap_recall`**: Recalls context about a codebase from your CueMap integrated brain. Uses natural language and semantic search to find relevant information.
   - `query` (string): The natural language query to search for.
   - `limit` (number, optional): Maximum results to return (default: 10).
