@@ -1,6 +1,6 @@
 {
   "name": "cuemap-mcp",
-  "version": "0.7.1",
+  "version": "0.7.2",
   "description": "MCP server for CueMap",
   "main": "build/index.js",
   "bin": {
@@ -13,6 +13,9 @@
   ],
   "scripts": {
     "build": "tsc",
+    "test": "npm run build && node --test test/*.test.cjs",
+    "test:e2e": "CUEMAP_E2E=1 node --test test/*.test.cjs",
+    "test:pack": "node scripts/verify-packed-install.cjs",
     "start": "node build/index.js",
     "dev": "tsc --watch"
   },
@@ -32,7 +35,7 @@
   "type": "commonjs",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.27.1",
-    "cuemap": "^0.7.1",
+    "cuemap": "^0.7.2",
     "zod": "^4.3.6"
   },
   "devDependencies": {
@@ -40,8 +43,8 @@
     "typescript": "^5.9.3"
   },
   "optionalDependencies": {
-    "@cuemap-dev/engine-darwin-arm64": "^0.7.1",
-    "@cuemap-dev/engine-darwin-x64": "^0.7.1",
-    "@cuemap-dev/engine-linux-x64": "^0.7.1"
+    "@cuemap-dev/engine-darwin-arm64": "^0.7.2",
+    "@cuemap-dev/engine-darwin-x64": "^0.7.2",
+    "@cuemap-dev/engine-linux-x64": "^0.7.2"
   }
 }
