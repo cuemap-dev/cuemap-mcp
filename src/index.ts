@@ -4,108 +4,241 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import CueMap from "cuemap";
-import { spawn, ChildProcess } from "child_process";
+import { EmbeddedCueMap } from "cuemap/embedded";
+import { File } from "node:buffer";
+import { readFileSync, statSync } from "node:fs";
 import path from "path";
-import os from "os";
-import fs from "fs";
+import { createHash } from "crypto";
+import { spawnSync } from "child_process";
+import { CueMapJobStatus, evaluateJobStatus } from "./job-status.js";
 
-let engineProcess: ChildProcess | null = null;
+let embeddedEngine: EmbeddedCueMap | null = null;
 let CUEMAP_URL = process.env.CUEMAP_URL;
 let client: CueMap;
+const observedJobActivity = new Map<string, boolean>();
+
+function git(cwd: string, args: string[]): string {
+    const result = spawnSync("git", args, { cwd, encoding: "utf8", timeout: 1_500 });
+    return result.status === 0 ? result.stdout.trim() : "";
+}
+
+function canonicalRemote(remote: string): string {
+    return remote
+        .replace(/^[^@\s]+@([^:]+):/, "ssh://$1/")
+        .replace(/:\/\/[^/@]+@/, "://")
+        .replace(/\.git$/, "")
+        .replace(/\/+$/, "")
+        .toLowerCase();
+}
+
+function defaultProjectId(cwd: string): string {
+    if (process.env.CUEMAP_PROJECT) return process.env.CUEMAP_PROJECT;
+    const root = git(cwd, ["rev-parse", "--show-toplevel"]) || cwd;
+    const remote = canonicalRemote(git(root, ["remote", "get-url", "origin"]));
+    const identity = remote || root;
+    const slug = path.basename(root)
+        .toLowerCase()
+        .replace(/[^a-z0-9_-]+/g, "-")
+        .replace(/^-+|-+$/g, "") || "workspace";
+    const digest = createHash("sha256").update(identity).digest("hex").slice(0, 10);
+    return `repo-${slug.slice(0, 40)}-${digest}`.slice(0, 64);
+}
+
+const DEFAULT_PROJECT = defaultProjectId(process.cwd());
 
 const server = new McpServer({
     name: "cuemap-mcp",
-    version: "1.0.0",
+    version: "0.7.2",
 });
 
-function getCuemapBinaryPath(): string | null {
-    if (process.env.CUEMAP_BIN) return process.env.CUEMAP_BIN;
-
-    // Check optional dependencies dynamically
-    try {
-        const platform = os.platform();
-        const arch = os.arch();
-        const pkgName = `@cuemap-dev/engine-${platform}-${arch}`;
-        const resolved = require.resolve(`${pkgName}/package.json`);
-        const binPath = path.join(path.dirname(resolved), "bin", "cuemap");
-        if (fs.existsSync(binPath)) return binPath;
-    } catch (e) {
-        // Ignored
+async function startEngine(): Promise<void> {
+    const configuredPort = process.env.CUEMAP_PORT
+        ? Number.parseInt(process.env.CUEMAP_PORT, 10)
+        : undefined;
+    if (configuredPort !== undefined && (!Number.isInteger(configuredPort) || configuredPort < 1 || configuredPort > 65535)) {
+        throw new Error("CUEMAP_PORT must be an integer between 1 and 65535");
     }
 
-    // Fallback: Check locally built binary (for development)
-    const localPath = path.resolve(__dirname, "../../rust_engine/target/release/cuemap");
-    if (fs.existsSync(localPath)) return localPath;
-
-    return null;
+    embeddedEngine = await EmbeddedCueMap.start({
+        url: CUEMAP_URL,
+        binPath: process.env.CUEMAP_BIN,
+        port: configuredPort,
+        requiredCapabilities: [
+            "repository_ingestion_scope_v1",
+            "semantic_retrieval_v1",
+            "chunk_embeddings_v1",
+            "intent_classification_v1",
+            "intent_job_status_v1",
+        ],
+        configPath: process.env.CUEMAP_CONFIG_PATH,
+        apiKey: process.env.CUEMAP_API_KEY,
+        logger: (message: string) => console.error(message),
+    });
+    CUEMAP_URL = embeddedEngine.url;
 }
 
-async function startEngine(): Promise<void> {
-    if (CUEMAP_URL) {
-        console.error(`Using external CueMap engine at ${CUEMAP_URL}`);
-        return;
+async function shutdown(signal: NodeJS.Signals): Promise<void> {
+    try {
+        await embeddedEngine?.stop();
+    } finally {
+        process.exit(signal === "SIGINT" ? 130 : 143);
     }
+}
 
-    const binPath = getCuemapBinaryPath();
-    if (!binPath) {
-        console.error("Could not find cuemap binary. Please install the correct optional dependency, set CUEMAP_BIN, or set CUEMAP_URL to an existing instance.");
-        console.error("Falling back to expecting 'cuemap' in PATH.");
+function projectClient(project?: string): CueMap {
+    return new CueMap({
+        url: CUEMAP_URL,
+        apiKey: process.env.CUEMAP_API_KEY,
+        projectId: project || DEFAULT_PROJECT,
+    });
+}
+
+function jsonToolResult(value: unknown) {
+    return {
+        content: [{
+            type: "text" as const,
+            text: JSON.stringify(value, null, 2),
+        }],
+    };
+}
+
+function confirmationRequired(action: string) {
+    return {
+        content: [{
+            type: "text" as const,
+            text: `No changes were made because ${action} requires confirmed: true after explicit user confirmation.`,
+        }],
+    };
+}
+
+function toolError(toolName: string, error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`Error executing ${toolName}`, error);
+    return {
+        content: [{
+            type: "text" as const,
+            text: `Error executing ${toolName} tool: ${message || "Unknown error"}`,
+        }],
+        isError: true,
+    };
+}
+
+async function engineRequest<T>(
+    method: "GET" | "POST" | "PATCH" | "DELETE",
+    requestPath: string,
+    body?: unknown,
+    project?: string,
+): Promise<T> {
+    if (!CUEMAP_URL) throw new Error("CueMap engine URL is not available");
+    const response = await fetch(`${CUEMAP_URL}${requestPath}`, {
+        method,
+        headers: {
+            ...(body === undefined ? {} : { "content-type": "application/json" }),
+            ...(process.env.CUEMAP_API_KEY ? { "X-API-Key": process.env.CUEMAP_API_KEY } : {}),
+            ...(project ? { "X-Project-ID": project } : {}),
+        },
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    });
+    if (!response.ok) {
+        const message = await response.text();
+        throw new Error(`CueMap returned HTTP ${response.status}: ${message}`);
     }
-
-    const execPath = binPath || "cuemap";
-    const port = process.env.CUEMAP_PORT || "8080";
-    CUEMAP_URL = `http://127.0.0.1:${port}`;
-
-    const args = ["start", "--port", port];
-    if (process.env.CUEMAP_CONFIG_PATH) {
-        args.push("--config", process.env.CUEMAP_CONFIG_PATH);
-        console.error(`Using custom config at ${process.env.CUEMAP_CONFIG_PATH}`);
-    }
-
-    console.error(`Starting Embedded CueMap Engine on port ${port}...`);
-    engineProcess = spawn(execPath, args, {
-        stdio: "ignore",
-        env: { ...process.env, CUEMAP_PORT: port }
-    });
-
-    engineProcess.on("error", (err) => {
-        console.error("Failed to start embedded engine:", err);
-    });
-
-    engineProcess.on("exit", (code) => {
-        console.error(`Embedded engine exited with code ${code}`);
-    });
-
-    process.on("SIGINT", () => {
-        if (engineProcess) engineProcess.kill("SIGINT");
-        process.exit(0);
-    });
-    process.on("SIGTERM", () => {
-        if (engineProcess) engineProcess.kill("SIGTERM");
-        process.exit(0);
-    });
-
-    // Wait slightly to ensure startup
-    await new Promise(resolve => setTimeout(resolve, 2000));
+    return await response.json() as T;
 }
 
 async function main() {
     await startEngine();
 
-    client = new CueMap({ url: CUEMAP_URL });
+    process.once("SIGINT", () => void shutdown("SIGINT"));
+    process.once("SIGTERM", () => void shutdown("SIGTERM"));
+
+    client = new CueMap({
+        url: CUEMAP_URL,
+        apiKey: process.env.CUEMAP_API_KEY,
+        projectId: DEFAULT_PROJECT,
+    });
+
+    server.registerTool(
+        "cuemap_init_preview",
+        {
+            description: "Preview supported repository files without ingesting content. Call this before first-time repository initialization, present the grouped paths to the user, and ask them to confirm or adjust the selection before calling cuemap_init.",
+            inputSchema: z.object({
+                path: z.string().describe("Absolute path to the repository root."),
+                projectName: z.string().optional().describe("Optional project ID. Defaults to the stable repository-scoped CueMap project ID."),
+                includedPaths: z.array(z.string()).optional().describe("Optional repository-relative files or folders to preview. Empty means every supported file allowed by ignore rules."),
+                ignoredPatterns: z.array(z.string()).optional().describe("Optional additional gitignore-style exclusion patterns."),
+                ignoredExtensions: z.array(z.string()).optional().describe("Optional additional excluded extensions without a leading dot."),
+            }),
+        },
+        async (args) => {
+            try {
+                const project = args.projectName || defaultProjectId(args.path);
+                const projects: any[] = await client.listProjects();
+                const projectIds = projects.map((item: any) => typeof item === "string" ? item : item.project_id);
+                let currentScope: any = null;
+                if (projectIds.includes(project)) {
+                    try {
+                        currentScope = await engineRequest<any>(
+                            "GET",
+                            `/projects/${encodeURIComponent(project)}/watch-dir`,
+                        );
+                    } catch {
+                        currentScope = null;
+                    }
+                }
+
+                const preview = await engineRequest<any>("POST", "/ingest/directory/preview", {
+                    watch_dir: args.path,
+                    included_paths: args.includedPaths,
+                    ignored_patterns: args.ignoredPatterns,
+                    ignored_extensions: args.ignoredExtensions,
+                });
+                return {
+                    content: [{
+                        type: "text" as const,
+                        text: JSON.stringify({
+                            project_id: project,
+                            current_scope: currentScope,
+                            selection_semantics: "included_paths are repository-relative files or folders; an empty list selects all supported files allowed by ignore rules",
+                            preview,
+                        }, null, 2),
+                    }],
+                };
+            } catch (error: any) {
+                console.error("Error previewing CueMap initialization", error);
+                return {
+                    content: [{
+                        type: "text" as const,
+                        text: `Error previewing repository ingestion: ${error?.message || "Unknown error"}`,
+                    }],
+                    isError: true,
+                };
+            }
+        },
+    );
 
     server.registerTool(
         "cuemap_init",
         {
-            description: "Initialize a CueMap project for a given local repository path. This triggers the Self-Learning Agent to ingest the codebase. Call this if the user hasn't set up the project yet or if cuemap_recall returns empty.",
+            description: "Apply a user-confirmed repository ingestion scope and start CueMap's incremental filesystem watcher. Always call cuemap_init_preview first for a new repository and obtain explicit user confirmation before setting confirmed=true.",
             inputSchema: z.object({
-                path: z.string().describe("Absolute path to the local repository."),
-                projectName: z.string().optional().describe("The ID of the project to create. Defaults to the folder name of the path.")
+                path: z.string().describe("Absolute path to the repository root."),
+                projectName: z.string().optional().describe("Optional project ID. Defaults to the stable repository-scoped CueMap project ID."),
+                includedPaths: z.array(z.string()).optional().describe("User-approved repository-relative files or folders. Empty means every supported file allowed by ignore rules."),
+                ignoredPatterns: z.array(z.string()).optional().describe("Additional gitignore-style exclusion patterns approved by the user."),
+                ignoredExtensions: z.array(z.string()).optional().describe("Additional excluded extensions without a leading dot."),
+                confirmed: z.boolean().describe("Must be true only after the user explicitly confirms the previewed ingestion scope."),
             })
         },
         async (args) => {
             try {
-                const pName = args.projectName || path.basename(args.path);
+                if (!args.confirmed) {
+                    return {
+                        content: [{ type: "text" as const, text: "No repository files were ingested because the proposed scope was not confirmed." }],
+                    };
+                }
+
+                const pName = args.projectName || defaultProjectId(args.path);
 
                 const projects: any[] = await client.listProjects();
                 const projectIds = projects.map((p: any) => typeof p === 'string' ? p : p.project_id);
@@ -113,15 +246,32 @@ async function main() {
                     await client.createProject(pName);
                 }
 
-                await client.setProjectWatchDir(pName, args.path);
+                await engineRequest<any>(
+                    "POST",
+                    `/projects/${encodeURIComponent(pName)}/watch-dir`,
+                    {
+                        watch_dir: args.path,
+                        included_paths: args.includedPaths,
+                        ignored_patterns: args.ignoredPatterns,
+                        ignored_extensions: args.ignoredExtensions,
+                    },
+                );
                 console.error(`Started ingestion for project ${pName} at ${args.path}`);
+                observedJobActivity.set(pName, false);
 
                 // Polling for job completion
                 let isComplete = false;
                 let checks = 0;
+                let lastStatus: CueMapJobStatus | null = null;
                 while (!isComplete && checks < 60) {
-                    const status = await client.jobsStatus(pName);
-                    if (status.phase === "idle") {
+                    const status = await client.jobsStatus(pName) as CueMapJobStatus;
+                    lastStatus = status;
+                    const evaluation = evaluateJobStatus(
+                        status,
+                        observedJobActivity.get(pName),
+                    );
+                    observedJobActivity.set(pName, evaluation.observed_activity);
+                    if (evaluation.verified_complete) {
                         isComplete = true;
                         break;
                     }
@@ -131,11 +281,17 @@ async function main() {
 
                 if (isComplete) {
                     return {
-                        content: [{ type: "text" as const, text: `Successfully initialized and ingested project ${pName}. You can now use cuemap_recall.` }]
+                        content: [{
+                            type: "text" as const,
+                            text: `Successfully initialized and ingested project ${pName}. CueMap observed ingestion activity, reached a terminal job phase, and completed memory intent annotation. The watcher will automatically ingest new or changed supported files within the approved scope. You can now use cuemap_recall.`,
+                        }]
                     };
                 } else {
                     return {
-                        content: [{ type: "text" as const, text: `Project ${pName} initialized, but ingestion is still actively running in the background. Partial results may be returned by cuemap_recall.` }]
+                        content: [{
+                            type: "text" as const,
+                            text: `Project ${pName} initialized with the approved scope, but ingestion has not reached a verified terminal state. Last job status: ${JSON.stringify(lastStatus)}. Call cuemap_status periodically until verified_complete is true. The watcher is active and partial results may be returned by cuemap_recall.`,
+                        }]
                     };
                 }
             } catch (error: any) {
@@ -151,27 +307,33 @@ async function main() {
     server.registerTool(
         "cuemap_add",
         {
-            description: "Store a natural-language memory in an explicit CueMap project. Creates the project if it does not exist, then applies deterministic cue extraction plus any supplied cues and metadata.",
+            description: "Store a natural-language memory in CueMap. Uses the repository-scoped default project unless one is supplied, creates it when needed, and applies deterministic cue extraction plus any cues and metadata.",
             inputSchema: z.object({
                 content: z.string().min(1).describe("The natural-language memory content to store."),
-                project: z.string().min(1).describe("The project ID that will own the memory."),
+                project: z.string().min(1).optional().describe("Optional project ID. Defaults to a stable ID derived from the current Git repository."),
                 cues: z.array(z.string()).optional().describe("Optional explicit cues/tags to associate with the memory."),
                 metadata: z.record(z.string(), z.unknown()).optional().describe("Optional JSON metadata to store with the memory."),
                 source_key: z.string().optional().describe("Optional stable source key for deterministic upsert/deduplication."),
-                cuepacks: z.array(z.string()).optional().describe("Optional CuePack names to apply during deterministic cue extraction."),
+                event_time: z.number().nonnegative().optional().describe("Optional original event timestamp as Unix seconds. Defaults to ingestion time."),
+                embedding: z.array(z.number()).nonempty().optional().describe("Optional precomputed memory embedding."),
                 disable_temporal_chunking: z.boolean().optional().describe("Disable temporal chunking for this memory. Default is false."),
                 async_ingest: z.boolean().optional().describe("Process ingestion in the background and return immediately. Default is false."),
             })
         },
         async (args) => {
             try {
+                const project = args.project || DEFAULT_PROJECT;
                 const projects: any[] = await client.listProjects();
                 const projectIds = projects.map((p: any) => typeof p === "string" ? p : p.project_id);
-                if (!projectIds.includes(args.project)) {
-                    await client.createProject(args.project);
+                if (!projectIds.includes(project)) {
+                    await client.createProject(project);
                 }
 
-                const projectClient = new CueMap({ url: CUEMAP_URL, projectId: args.project });
+                const projectClient = new CueMap({
+                    url: CUEMAP_URL,
+                    apiKey: process.env.CUEMAP_API_KEY,
+                    projectId: project,
+                });
                 const memoryId = await projectClient.add(
                     args.content,
                     args.cues || [],
@@ -179,7 +341,8 @@ async function main() {
                     args.disable_temporal_chunking || false,
                     {
                         sourceKey: args.source_key,
-                        cuepacks: args.cuepacks,
+                        eventTime: args.event_time,
+                        embedding: args.embedding,
                         asyncIngest: args.async_ingest,
                     }
                 );
@@ -187,7 +350,7 @@ async function main() {
                 return {
                     content: [{
                         type: "text" as const,
-                        text: `Stored memory ${memoryId} in CueMap project ${args.project}.`,
+                        text: `Stored memory ${memoryId} in CueMap project ${project}.`,
                     }],
                 };
             } catch (error: any) {
@@ -204,9 +367,472 @@ async function main() {
     );
 
     server.registerTool(
+        "cuemap_intent_classify",
+        {
+            description: "Classify text with CueMap's local intent model and return recall/memory eligibility signals. Scores are ranking signals, not calibrated probabilities.",
+            inputSchema: z.object({
+                text: z.string().min(1),
+                target: z.enum(["query", "memory"]).optional().describe("Classification target. Default is query."),
+                project: z.string().min(1).optional().describe("Optional project ID. Defaults to the repository-scoped project."),
+            }),
+        },
+        async (args) => {
+            try {
+                return jsonToolResult(await projectClient(args.project).classifyIntent(
+                    args.text,
+                    args.target || "query",
+                ));
+            } catch (error) {
+                return toolError("cuemap_intent_classify", error);
+            }
+        },
+    );
+
+    server.registerTool(
+        "cuemap_status",
+        {
+            description: "Check CueMap background ingestion progress for a project. After cuemap_init, poll this tool until verified_complete is true. An initial idle status with 0/0 writes is not proof that ingestion completed.",
+            inputSchema: z.object({
+                project: z.string().min(1).optional().describe("Optional project ID. Defaults to the stable repository-scoped CueMap project ID."),
+            }),
+        },
+        async (args) => {
+            try {
+                const project = args.project || DEFAULT_PROJECT;
+                const status = await client.jobsStatus(project) as CueMapJobStatus;
+                const evaluation = evaluateJobStatus(
+                    status,
+                    observedJobActivity.get(project),
+                );
+                observedJobActivity.set(project, evaluation.observed_activity);
+
+                return {
+                    content: [{
+                        type: "text" as const,
+                        text: JSON.stringify({
+                            project_id: project,
+                            ...status,
+                            ...evaluation,
+                        }, null, 2),
+                    }],
+                };
+            } catch (error: any) {
+                console.error("Error checking CueMap status", error);
+                return {
+                    content: [{
+                        type: "text" as const,
+                        text: `Error executing cuemap_status tool: ${error?.message || "Unknown error"}`,
+                    }],
+                    isError: true,
+                };
+            }
+        },
+    );
+
+    server.registerTool(
+        "cuemap_projects",
+        {
+            description: "List CueMap projects and their available summary metadata.",
+            inputSchema: z.object({}),
+        },
+        async () => {
+            try {
+                return jsonToolResult(await client.listProjects());
+            } catch (error) {
+                return toolError("cuemap_projects", error);
+            }
+        },
+    );
+
+    server.registerTool(
+        "cuemap_stats",
+        {
+            description: "Read CueMap statistics for the repository-scoped project or globally across the engine.",
+            inputSchema: z.object({
+                project: z.string().min(1).optional().describe("Optional project ID. Defaults to the repository-scoped project."),
+                global: z.boolean().optional().describe("Return global engine statistics instead of project statistics. Default is false."),
+            }),
+        },
+        async (args) => {
+            try {
+                if (args.global && args.project) {
+                    throw new Error("project and global cannot be supplied together");
+                }
+                const project = args.global ? undefined : (args.project || DEFAULT_PROJECT);
+                return jsonToolResult(await engineRequest("GET", "/stats", undefined, project));
+            } catch (error) {
+                return toolError("cuemap_stats", error);
+            }
+        },
+    );
+
+    server.registerTool(
+        "cuemap_memory_get",
+        {
+            description: "Get one CueMap memory by numeric ID.",
+            inputSchema: z.object({
+                memory_id: z.number().int().nonnegative().max(4_294_967_295),
+                project: z.string().min(1).optional().describe("Optional project ID. Defaults to the repository-scoped project."),
+            }),
+        },
+        async (args) => {
+            try {
+                const project = args.project || DEFAULT_PROJECT;
+                return jsonToolResult(await engineRequest(
+                    "GET",
+                    `/memories/${args.memory_id}`,
+                    undefined,
+                    project,
+                ));
+            } catch (error) {
+                return toolError("cuemap_memory_get", error);
+            }
+        },
+    );
+
+    server.registerTool(
+        "cuemap_memory_reinforce",
+        {
+            description: "Reinforce one CueMap memory, optionally along specific cue pathways.",
+            inputSchema: z.object({
+                memory_id: z.number().int().nonnegative().max(4_294_967_295),
+                cues: z.array(z.string().min(1)).optional(),
+                project: z.string().min(1).optional().describe("Optional project ID. Defaults to the repository-scoped project."),
+            }),
+        },
+        async (args) => {
+            try {
+                const project = args.project || DEFAULT_PROJECT;
+                return jsonToolResult(await engineRequest(
+                    "PATCH",
+                    `/memories/${args.memory_id}/reinforce`,
+                    { cues: args.cues || [] },
+                    project,
+                ));
+            } catch (error) {
+                return toolError("cuemap_memory_reinforce", error);
+            }
+        },
+    );
+
+    server.registerTool(
+        "cuemap_memory_delete",
+        {
+            description: "Permanently delete one CueMap memory. Set confirmed=true only after explicit user confirmation.",
+            inputSchema: z.object({
+                memory_id: z.number().int().nonnegative().max(4_294_967_295),
+                project: z.string().min(1).optional().describe("Optional project ID. Defaults to the repository-scoped project."),
+                confirmed: z.boolean().describe("Must be true only after the user explicitly confirms permanent deletion."),
+            }),
+        },
+        async (args) => {
+            if (!args.confirmed) return confirmationRequired("memory deletion");
+            try {
+                const project = args.project || DEFAULT_PROJECT;
+                return jsonToolResult(await engineRequest(
+                    "DELETE",
+                    `/memories/${args.memory_id}`,
+                    undefined,
+                    project,
+                ));
+            } catch (error) {
+                return toolError("cuemap_memory_delete", error);
+            }
+        },
+    );
+
+    server.registerTool(
+        "cuemap_ingest_url",
+        {
+            description: "Explicitly ingest content from a URL, optionally crawling same-domain links. Use only when the user asks to ingest that URL.",
+            inputSchema: z.object({
+                url: z.string().url(),
+                depth: z.number().int().nonnegative().max(10).optional().describe("Crawl depth. Zero ingests only the supplied page."),
+                same_domain_only: z.boolean().optional().describe("Restrict recursive crawling to the starting domain. Default is true."),
+                project: z.string().min(1).optional().describe("Optional project ID. Defaults to the repository-scoped project."),
+            }),
+        },
+        async (args) => {
+            try {
+                const result = await projectClient(args.project).ingestUrl(
+                    args.url,
+                    args.depth || 0,
+                    args.same_domain_only ?? true,
+                );
+                return jsonToolResult(result);
+            } catch (error) {
+                return toolError("cuemap_ingest_url", error);
+            }
+        },
+    );
+
+    server.registerTool(
+        "cuemap_ingest_content",
+        {
+            description: "Explicitly ingest supplied raw content into CueMap. Use only when the user asks to persist that content.",
+            inputSchema: z.object({
+                content: z.string().min(1),
+                filename: z.string().min(1).optional().describe("Logical source filename used for type detection. Default is content.txt."),
+                source_key: z.string().optional().describe("Stable source key for deterministic replacement or deduplication."),
+                metadata: z.record(z.string(), z.unknown()).optional(),
+                structural_cues: z.array(z.string()).optional(),
+                embeddings: z.array(z.array(z.number()).nonempty()).optional().describe("Optional one-vector-per-produced-chunk embeddings."),
+                segmenter: z.enum(["sentence_window", "logical_block"]).optional(),
+                segment_window_size: z.number().int().positive().optional(),
+                segment_overlap: z.number().int().nonnegative().optional(),
+                segment_min_chunk_chars: z.number().int().positive().optional(),
+                segment_max_chunk_chars: z.number().int().positive().optional(),
+                project: z.string().min(1).optional().describe("Optional project ID. Defaults to the repository-scoped project."),
+            }),
+        },
+        async (args) => {
+            try {
+                const result = await projectClient(args.project).ingestContent(
+                    args.content,
+                    args.filename || "content.txt",
+                    {
+                        sourceKey: args.source_key,
+                        metadata: args.metadata,
+                        structuralCues: args.structural_cues,
+                        embeddings: args.embeddings,
+                        segmenter: args.segmenter,
+                        segmentWindowSize: args.segment_window_size,
+                        segmentOverlap: args.segment_overlap,
+                        segmentMinChunkChars: args.segment_min_chunk_chars,
+                        segmentMaxChunkChars: args.segment_max_chunk_chars,
+                    },
+                );
+                return jsonToolResult(result);
+            } catch (error) {
+                return toolError("cuemap_ingest_content", error);
+            }
+        },
+    );
+
+    server.registerTool(
+        "cuemap_ingest_file",
+        {
+            description: "Explicitly ingest one local file into CueMap. Use only for a file the user has placed in scope and asked to ingest.",
+            inputSchema: z.object({
+                path: z.string().min(1).describe("Absolute or repository-relative path to the file."),
+                project: z.string().min(1).optional().describe("Optional project ID. Defaults to the repository-scoped project."),
+            }),
+        },
+        async (args) => {
+            try {
+                const filePath = path.resolve(args.path);
+                if (!statSync(filePath).isFile()) {
+                    throw new Error(`Not a regular file: ${filePath}`);
+                }
+                const file = new File(
+                    [readFileSync(filePath)],
+                    path.basename(filePath),
+                    { type: "application/octet-stream" },
+                );
+                return jsonToolResult(await projectClient(args.project).ingestFile(file));
+            } catch (error) {
+                return toolError("cuemap_ingest_file", error);
+            }
+        },
+    );
+
+    server.registerTool(
+        "cuemap_project_export",
+        {
+            description: "Export a cursor-paginated page of memories from a CueMap project.",
+            inputSchema: z.object({
+                project: z.string().min(1).optional().describe("Optional project ID. Defaults to the repository-scoped project."),
+                cursor: z.union([z.number().int().nonnegative(), z.string().min(1)]).optional(),
+                limit: z.number().int().positive().max(10_000).optional(),
+                include_content: z.boolean().optional(),
+                include_cues: z.boolean().optional(),
+                include_metadata: z.boolean().optional(),
+            }),
+        },
+        async (args) => {
+            try {
+                const project = args.project || DEFAULT_PROJECT;
+                return jsonToolResult(await projectClient(project).exportProject(project, {
+                    cursor: args.cursor,
+                    limit: args.limit,
+                    includeContent: args.include_content,
+                    includeCues: args.include_cues,
+                    includeMetadata: args.include_metadata,
+                }));
+            } catch (error) {
+                return toolError("cuemap_project_export", error);
+            }
+        },
+    );
+
+    server.registerTool(
+        "cuemap_project_artifacts",
+        {
+            description: "Inspect CueBridge artifact metadata for a CueMap project without reloading or mutating it.",
+            inputSchema: z.object({
+                project: z.string().min(1).optional().describe("Optional project ID. Defaults to the repository-scoped project."),
+            }),
+        },
+        async (args) => {
+            try {
+                const project = args.project || DEFAULT_PROJECT;
+                return jsonToolResult(await projectClient(project).projectArtifacts(project));
+            } catch (error) {
+                return toolError("cuemap_project_artifacts", error);
+            }
+        },
+    );
+
+    server.registerTool(
+        "cuemap_alias_list",
+        {
+            description: "List manual cue aliases associated with one cue.",
+            inputSchema: z.object({
+                cue: z.string().min(1),
+                project: z.string().min(1).optional().describe("Optional project ID. Defaults to the repository-scoped project."),
+            }),
+        },
+        async (args) => {
+            try {
+                return jsonToolResult(await projectClient(args.project).getAliases(args.cue));
+            } catch (error) {
+                return toolError("cuemap_alias_list", error);
+            }
+        },
+    );
+
+    server.registerTool(
+        "cuemap_alias_add",
+        {
+            description: "Add a manual weighted mapping from one cue to another.",
+            inputSchema: z.object({
+                from: z.string().min(1),
+                to: z.string().min(1),
+                weight: z.number().min(0).max(1).optional().describe("Association weight from 0 to 1. Default is 1."),
+                project: z.string().min(1).optional().describe("Optional project ID. Defaults to the repository-scoped project."),
+            }),
+        },
+        async (args) => {
+            try {
+                const added = await projectClient(args.project).addAlias(
+                    args.from,
+                    args.to,
+                    args.weight ?? 1,
+                );
+                if (!added) throw new Error("CueMap rejected the alias mapping");
+                return jsonToolResult({ added: true, from: args.from, to: args.to, weight: args.weight ?? 1 });
+            } catch (error) {
+                return toolError("cuemap_alias_add", error);
+            }
+        },
+    );
+
+    server.registerTool(
+        "cuemap_alias_merge",
+        {
+            description: "Merge multiple cues into one canonical cue. Set confirmed=true only after explicit user confirmation.",
+            inputSchema: z.object({
+                cues: z.array(z.string().min(1)).min(2),
+                to: z.string().min(1),
+                project: z.string().min(1).optional().describe("Optional project ID. Defaults to the repository-scoped project."),
+                confirmed: z.boolean().describe("Must be true only after the user explicitly confirms the merge."),
+            }),
+        },
+        async (args) => {
+            if (!args.confirmed) return confirmationRequired("alias merging");
+            try {
+                const merged = await projectClient(args.project).mergeAliases(args.cues, args.to);
+                if (!merged) throw new Error("CueMap rejected the alias merge");
+                return jsonToolResult({ merged: true, cues: args.cues, to: args.to });
+            } catch (error) {
+                return toolError("cuemap_alias_merge", error);
+            }
+        },
+    );
+
+    server.registerTool(
+        "cuemap_lexicon_inspect",
+        {
+            description: "Inspect one cue and its Lexicon relationships.",
+            inputSchema: z.object({
+                cue: z.string().min(1),
+                project: z.string().min(1).optional().describe("Optional project ID. Defaults to the repository-scoped project."),
+            }),
+        },
+        async (args) => {
+            try {
+                return jsonToolResult(await projectClient(args.project).lexiconInspect(args.cue));
+            } catch (error) {
+                return toolError("cuemap_lexicon_inspect", error);
+            }
+        },
+    );
+
+    server.registerTool(
+        "cuemap_lexicon_graph",
+        {
+            description: "Read the current Lexicon graph for a project.",
+            inputSchema: z.object({
+                project: z.string().min(1).optional().describe("Optional project ID. Defaults to the repository-scoped project."),
+            }),
+        },
+        async (args) => {
+            try {
+                return jsonToolResult(await projectClient(args.project).lexiconGraph());
+            } catch (error) {
+                return toolError("cuemap_lexicon_graph", error);
+            }
+        },
+    );
+
+    server.registerTool(
+        "cuemap_lexicon_wire",
+        {
+            description: "Manually wire a token to a canonical Lexicon cue.",
+            inputSchema: z.object({
+                token: z.string().min(1),
+                canonical: z.string().min(1),
+                project: z.string().min(1).optional().describe("Optional project ID. Defaults to the repository-scoped project."),
+            }),
+        },
+        async (args) => {
+            try {
+                return jsonToolResult(await projectClient(args.project).lexiconWire(
+                    args.token,
+                    args.canonical,
+                ));
+            } catch (error) {
+                return toolError("cuemap_lexicon_wire", error);
+            }
+        },
+    );
+
+    server.registerTool(
+        "cuemap_lexicon_delete",
+        {
+            description: "Permanently delete one Lexicon entry. Set confirmed=true only after explicit user confirmation.",
+            inputSchema: z.object({
+                entry_id: z.union([z.number().int().nonnegative(), z.string().min(1)]),
+                project: z.string().min(1).optional().describe("Optional project ID. Defaults to the repository-scoped project."),
+                confirmed: z.boolean().describe("Must be true only after the user explicitly confirms permanent deletion."),
+            }),
+        },
+        async (args) => {
+            if (!args.confirmed) return confirmationRequired("Lexicon entry deletion");
+            try {
+                const deleted = await projectClient(args.project).lexiconDelete(String(args.entry_id));
+                if (!deleted) throw new Error("CueMap did not delete the Lexicon entry");
+                return jsonToolResult({ deleted: true, entry_id: args.entry_id });
+            } catch (error) {
+                return toolError("cuemap_lexicon_delete", error);
+            }
+        },
+    );
+
+    server.registerTool(
         "cuemap_recall",
         {
-            description: "Recall context about a codebase from a CueMap integrated brain. Uses natural language and associative search to find relevant information.",
+            description: "Recall ranked context from CueMap using lexical, semantic, or hybrid query signals. Hybrid is the engine default and uses the configured local encoder to rerank lexical candidates.",
             inputSchema: z.object({
                 query: z.string().describe("The natural language query to search the codebase memory for."),
                 limit: z.number().optional().describe("Optional limit on the number of results to return. Default is 10."),
@@ -221,7 +847,6 @@ async function main() {
                 trace_timing: z.boolean().optional().describe("Include v0.7 timing diagnostics in the response. Default is false."),
                 disable_salience_bias: z.boolean().optional().describe("Disable salience bias scoring. Default is false."),
                 disable_alias_expansion: z.boolean().optional().describe("Disable alias expansion during querying. Default is true."),
-                cuepacks: z.array(z.string()).optional().describe("Optional cuepack names to apply during query-intent expansion."),
                 parent_fusion: z.enum(["off", "auto", "force"]).optional().describe("Parent fusion mode for chunk-parent reconstruction. Default is off."),
                 parent_fusion_limit: z.number().optional().describe("Candidate limit for parent fusion. Default is 80."),
                 parent_fusion_min_chunks: z.number().optional().describe("Minimum sibling chunks required for parent fusion. Default is 2."),
@@ -235,6 +860,8 @@ async function main() {
                 evidence_coverage_max_sessions: z.number().optional().describe("Maximum sessions considered for evidence coverage. Default is 3."),
                 disable_cuebridge_artifacts: z.boolean().optional().describe("Disable CueBridge artifact expansion. Default is false."),
                 cuebridge_gap_limit: z.number().optional().describe("Maximum CueBridge gap expansions. Default is 6."),
+                semantic_mode: z.enum(["lexical", "semantic", "hybrid"]).optional().describe("Query signal mode. lexical uses cue recall only, semantic uses vector candidate discovery, and hybrid reranks lexical candidates. Default is hybrid."),
+                query_embedding: z.array(z.number()).optional().describe("Optional precomputed query vector. Use this when the application owns the embedding provider."),
             }),
         },
         async (args) => {
@@ -244,13 +871,13 @@ async function main() {
                     depth = 1, expansion_depth = 1, auto_reinforce = false, min_intersection,
                     explain = false, trace_timing = false,
                     disable_salience_bias = false, disable_alias_expansion = true,
-                    cuepacks, parent_fusion = "off", parent_fusion_limit = 80,
+                    parent_fusion = "off", parent_fusion_limit = 80,
                     parent_fusion_min_chunks = 2, ordered_reconstruction = "off",
                     ordered_reconstruction_limit = 80, ordered_session_scan_limit = 4096,
                     ordered_max_sessions = 3, evidence_coverage = "off",
                     evidence_coverage_limit = 100, evidence_coverage_session_scan_limit = 4096,
                     evidence_coverage_max_sessions = 3, disable_cuebridge_artifacts = false,
-                    cuebridge_gap_limit = 6
+                    cuebridge_gap_limit = 6, semantic_mode = "hybrid", query_embedding
                 } = args;
 
                 const results = await client.recall({
@@ -267,7 +894,6 @@ async function main() {
                     trace_timing,
                     disable_salience_bias,
                     disable_alias_expansion,
-                    cuepacks,
                     parent_fusion,
                     parent_fusion_limit,
                     parent_fusion_min_chunks,
@@ -281,7 +907,9 @@ async function main() {
                     evidence_coverage_max_sessions,
                     disable_cuebridge_artifacts,
                     cuebridge_gap_limit,
-                });
+                    semantic_mode,
+                    query_embedding,
+                } as any);
 
                 let items: any[] = [];
 
@@ -308,7 +936,7 @@ async function main() {
                     };
                 }
 
-                let formattedText = `CueMap found ${items.length} relevant results:\n\n`;
+                let formattedText = `CueMap found ${items.length} relevant memories:\n\n`;
                 items.forEach((r: any, i: number) => {
                     const scoreStr = r.score !== undefined ? ` (Score: ${Number(r.score).toFixed(2)})` : '';
                     formattedText += `### Result ${i + 1}${scoreStr}\n`;
@@ -350,7 +978,7 @@ async function main() {
 
     const transport = new StdioServerTransport();
     await server.connect(transport);
-    console.error("CueMap MCP server running on stdio");
+    console.error(`CueMap MCP server running on stdio (default project: ${DEFAULT_PROJECT})`);
 }
 
 main().catch((error) => {
