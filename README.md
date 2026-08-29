@@ -1,12 +1,25 @@
-# CueMap MCP Server v0.7.2
+<p align="center">
+  <img src="https://raw.githubusercontent.com/cuemap-dev/cuemap/main/landing-pagev3/public/cuemap-social-mark-v1.png" alt="CueMap" width="120">
+</p>
+
+<h1 align="center">CueMap MCP Server v0.7.3</h1>
+
+<p align="center">A premium MCP bridge for explainable, repository-aware agent memory.</p>
+
+<p align="center">
+  <a href="https://www.npmjs.com/package/cuemap-mcp"><img src="https://img.shields.io/npm/v/cuemap-mcp?logo=npm" alt="npm"></a>
+  <a href="https://www.npmjs.com/package/cuemap-mcp"><img src="https://img.shields.io/npm/dm/cuemap-mcp?logo=npm" alt="npm downloads"></a>
+  <a href="https://modelcontextprotocol.io/"><img src="https://img.shields.io/badge/MCP-compatible-7c3aed" alt="MCP compatible"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-5e5ce6" alt="License"></a>
+</p>
 
 The [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server for CueMap, allowing AI coding assistants (like Claude Desktop, Cursor, Windsurf, and Antigravity) to instantly recall codebase context using the CueMap engine.
 
 ## Zero-Config Deployment
 
-The CueMap MCP Server is designed to work completely out-of-the-box. When started, it automatically manages a high-performance Rust instance of the CueMap Server in the background. The v0.7.2 engine bundles qint8 MiniLM-L3 by default and q4 MiniLM-L3 for the edge profile; no model download occurs at runtime.
+The CueMap MCP Server is designed to work completely out-of-the-box. When started, it automatically manages a high-performance Rust instance of the CueMap Server in the background. The v0.7.3 engine bundles qint8 MiniLM-L3 by default and q4 MiniLM-L3 for the edge profile; no model download occurs at runtime.
 
-You do **not** need to install or run the CueMap CLI manually. The correct pre-compiled binary for your operating system is automatically downloaded via optional NPM dependencies.
+You do **not** need to install or run the CueMap CLI manually. The correct pre-compiled binary for your operating system is automatically downloaded via optional NPM dependencies. Embedded startup supports Linux x64/ARM64, macOS x64/ARM64, and Windows x64.
 
 ## Installation
 
@@ -16,6 +29,10 @@ npm install -g cuemap-mcp
 ```
 
 *(Note: Ensure your package manager is configured to download `optionalDependencies` so the local Rust binary is included).*
+
+## Agent Plugin
+
+CueMap also ships a separate [`cuemap-agent-plugin`](https://www.npmjs.com/package/cuemap-agent-plugin) package for Agent Plugins-compatible clients. It bundles the portable `plugin.json` manifest, stdio `mcp.json` configuration, and a repository-memory skill. The plugin launches this MCP server at the matching release version and must be installed or downloaded separately from `cuemap-mcp`.
 
 ## Configuration (Environment Variables)
 

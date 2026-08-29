@@ -48,7 +48,7 @@ test("does not register grounded recall", () => {
     );
 });
 
-test("recall exposes the v0.7.2 semantic contract", () => {
+test("recall exposes the v0.7.3 semantic contract", () => {
     const start = builtServer.indexOf('registerTool("cuemap_recall"');
     const registration = builtServer.slice(start);
     for (const field of ["semantic_mode", "query_embedding"]) {

@@ -47,7 +47,7 @@ test("serves the packed MCP protocol against a real release engine", {
     const port = await freePort();
     const binary = process.env.CUEMAP_E2E_BIN || resolve(__dirname, "../../rust_engine/target/release/cuemap");
     const serverPath = resolve(__dirname, "../build/index.js");
-    const client = new Client({ name: "cuemap-mcp-e2e", version: "0.7.2" });
+    const client = new Client({ name: "cuemap-mcp-e2e", version: "0.7.3" });
     const transport = new StdioClientTransport({
         command: process.execPath,
         args: [serverPath],

@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.7.3] - 2026-08-27
+
+### Changed
+
+- Synchronized the MCP server release and documentation with CueMap Engine v0.7.3.
+- Documented mobile-language ingestion for Swift, Dart, Objective-C, and Kotlin repositories.
+- Documented the separately published CueMap Agent Plugin integration.
+
 ## [0.7.2] - 2026-08-04
 
 ### Added

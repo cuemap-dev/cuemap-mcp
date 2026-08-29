@@ -1,6 +1,6 @@
 {
   "name": "cuemap-mcp",
-  "version": "0.7.2",
+  "version": "0.7.3",
   "description": "MCP server for CueMap",
   "main": "build/index.js",
   "bin": {
@@ -45,6 +45,7 @@
   "optionalDependencies": {
     "@cuemap-dev/engine-darwin-arm64": "^0.7.2",
     "@cuemap-dev/engine-darwin-x64": "^0.7.2",
-    "@cuemap-dev/engine-linux-x64": "^0.7.2"
+    "@cuemap-dev/engine-linux-x64": "^0.7.2",
+    "@cuemap-dev/engine-win32-x64": "^0.7.2"
   }
 }
