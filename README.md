@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/cuemap-dev/cuemap/main/landing-pagev3/public/cuemap-social-mark-v1.png" alt="CueMap" width="120">
+  <img src="https://cuemap.dev/cuemap-logo.PNG" alt="CueMap" width="120">
 </p>
 
 <h1 align="center">CueMap MCP Server v0.7.3</h1>
