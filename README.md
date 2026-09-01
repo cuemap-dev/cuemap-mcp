@@ -155,4 +155,7 @@ These tools are for explicit ingestion requests. Repository initialization conti
 
 ## License
 
-MIT - See the [LICENSE](LICENSE) file for more details.
+The MCP server package is MIT-licensed. Its optional native engine dependencies
+are separate packages: v0.7.3 and later engine packages are Apache-2.0, while
+pre-v0.7.3 engine packages remain under BSL-1.1. See [LICENSE](LICENSE) for the
+MCP server license.
