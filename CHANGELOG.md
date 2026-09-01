@@ -7,6 +7,7 @@
 - Synchronized the MCP server release and documentation with CueMap Engine v0.7.3.
 - Documented mobile-language ingestion for Swift, Dart, Objective-C, and Kotlin repositories.
 - Documented the separately published CueMap Agent Plugin integration.
+- Changed the embedded engine's preferred default port from `8080` to `8735`; `CUEMAP_PORT` remains available for overrides.
 
 ## [0.7.2] - 2026-08-04
 

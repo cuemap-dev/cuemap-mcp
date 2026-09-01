@@ -36,11 +36,11 @@ CueMap also ships a separate [`cuemap-agent-plugin`](https://www.npmjs.com/packa
 
 ## Configuration (Environment Variables)
 
-By default, the embedded engine runs on port `8080`. You can customize the server behavior by passing the following environment variables in your MCP configuration:
+By default, the embedded engine runs on port `8735`. You can customize the server behavior by passing the following environment variables in your MCP configuration:
 
-- `CUEMAP_PORT`: Override the port the embedded engine binds to (default: `8080`).
+- `CUEMAP_PORT`: Override the port the embedded engine binds to (default: `8735`).
 - `CUEMAP_CONFIG_PATH`: Absolute path to a custom `server_config.toml` to configure advanced Engine tuning, background jobs, and RAG search parameters.
-- `CUEMAP_URL`: If you prefer to bypass the embedded engine and connect to a remotely hosted or separately running CueMap server, specify its URL here (e.g. `http://localhost:8080`).
+- `CUEMAP_URL`: If you prefer to bypass the embedded engine and connect to a remotely hosted or separately running CueMap server, specify its URL here (e.g. `http://localhost:8735`).
 - `CUEMAP_PROJECT`: Override the default project. Without this setting, CueMap derives a stable repository-scoped project from the current Git remote or working directory.
 - `CUEMAP_LOG_PATH`: Override the embedded engine log path. It defaults to `~/.cuemap/server.log`, which is the file read by `cuemap logs`.
 
@@ -64,7 +64,7 @@ To use this MCP server with your AI assistant, add it to your assistant's MCP co
         "cuemap-mcp"
       ],
       "env": {
-        "CUEMAP_PORT": "8080"
+        "CUEMAP_PORT": "8735"
       }
     }
   }
