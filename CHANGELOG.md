@@ -9,6 +9,11 @@
 - Documented the separately published CueMap Agent Plugin integration.
 - Changed the embedded engine's preferred default port from `8080` to `8735`; `CUEMAP_PORT` remains available for overrides.
 
+### Added
+
+- Added project save/load/unload tools and confirmed `.cuemap` pack/load/push/pull tools; `cuemap_projects` reports whether each project is currently loaded.
+- Added confirmed `cuemap_project_sync` with immutable history and divergence protection.
+
 ## [0.7.2] - 2026-08-04
 
 ### Added

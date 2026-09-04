@@ -9,6 +9,7 @@
   "files": [
     "build",
     "README.md",
+    "SKILL.md",
     "LICENSE"
   ],
   "scripts": {

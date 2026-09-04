@@ -22,6 +22,7 @@ try {
         "const pkg = JSON.parse(fs.readFileSync(path.join(path.dirname(require.resolve('cuemap-mcp')), '..', 'package.json')));",
         `if (pkg.version !== ${JSON.stringify(mcpPackage.version)}) throw new Error('unexpected package version');`,
         "if (!fs.existsSync(require.resolve('cuemap-mcp/build/index.js'))) throw new Error('MCP entry point missing');",
+        "if (!fs.existsSync(path.join(path.dirname(require.resolve('cuemap-mcp')), '..', 'SKILL.md'))) throw new Error('MCP SKILL.md missing from package');",
     ].join(" ");
     execFileSync(process.execPath, ["-e", probe], { cwd: sandbox, stdio: "inherit" });
     assert.ok(true);

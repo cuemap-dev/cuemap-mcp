@@ -1,6 +1,6 @@
 const assert = require("node:assert/strict");
 const { createServer } = require("node:http");
-const { mkdtempSync, rmSync, writeFileSync } = require("node:fs");
+const { mkdtempSync, rmSync, statSync, writeFileSync } = require("node:fs");
 const { tmpdir } = require("node:os");
 const { join, resolve } = require("node:path");
 const test = require("node:test");
@@ -29,7 +29,11 @@ function textOf(result) {
 
 const requiredTools = [
     "cuemap_init_preview", "cuemap_init", "cuemap_add", "cuemap_intent_classify",
-    "cuemap_status", "cuemap_projects", "cuemap_stats", "cuemap_memory_get",
+    "cuemap_status", "cuemap_projects", "cuemap_project_save",
+    "cuemap_project_load", "cuemap_project_unload", "cuemap_project_pack",
+    "cuemap_project_package_load", "cuemap_project_push", "cuemap_project_pull",
+    "cuemap_project_sync",
+    "cuemap_stats", "cuemap_memory_get",
     "cuemap_memory_reinforce", "cuemap_memory_delete", "cuemap_ingest_url",
     "cuemap_ingest_content", "cuemap_ingest_file", "cuemap_project_export",
     "cuemap_project_artifacts", "cuemap_alias_list", "cuemap_alias_add",
@@ -109,6 +113,18 @@ test("serves the packed MCP protocol against a real release engine", {
         },
     });
     assert.match(textOf(added), /Stored memory \d+/);
+
+    const packagePath = join(dataDir, `${project}.cuemap`);
+    const packed = await client.callTool({
+        name: "cuemap_project_pack",
+        arguments: {
+            project,
+            output_path: packagePath,
+            confirmed: true,
+        },
+    });
+    assert.match(textOf(packed), /"status": "packed"/);
+    assert.ok(statSync(packagePath).size > 0);
 
     const recalled = await client.callTool({
         name: "cuemap_recall",

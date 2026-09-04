@@ -15,6 +15,8 @@
 
 The [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server for CueMap, allowing AI coding assistants (like Claude Desktop, Cursor, Windsurf, and Antigravity) to instantly recall codebase context using the CueMap engine.
 
+For agent-facing operating guidance—including repository consent, supported content types, recall modes, accuracy-oriented knob selection, and troubleshooting—see [SKILL.md](SKILL.md).
+
 ## Zero-Config Deployment
 
 The CueMap MCP Server is designed to work completely out-of-the-box. When started, it automatically manages a high-performance Rust instance of the CueMap Server in the background. The v0.7.3 engine bundles qint8 MiniLM-L3 by default and q4 MiniLM-L3 for the edge profile; no model download occurs at runtime.
@@ -98,7 +100,19 @@ To use this MCP server with your AI assistant, add it to your assistant's MCP co
 
 ### Project inspection and memory lifecycle
 
-- **`cuemap_projects`**: List projects and their summary metadata.
+- **`cuemap_projects`**: List projects and their summary metadata, including
+  whether each project is currently loaded in RAM.
+- **`cuemap_project_load`**: Explicitly warm a persisted project before a
+  latency-sensitive operation. Ordinary project requests demand-load it when
+  needed.
+- **`cuemap_project_save`**: Persist a current snapshot without unloading it.
+- **`cuemap_project_unload`**: Persist and unload a project to reduce memory
+  usage. Active work can produce a retryable busy response.
+- **`cuemap_project_pack` / `cuemap_project_package_load`**: Write or load a
+  ready-to-query local `.cuemap` package.
+- **`cuemap_project_push` / `cuemap_project_pull`**: Transfer a package through
+  S3 using the engine host's configured AWS CLI.
+- **`cuemap_project_sync`**: Fast-forward immutable S3 history and refuse divergence.
 - **`cuemap_stats`**: Read repository-project statistics, or global engine statistics with `global: true`.
 - **`cuemap_memory_get`**: Read one memory by numeric `memory_id`.
 - **`cuemap_memory_reinforce`**: Reinforce one memory, optionally on explicit `cues`.

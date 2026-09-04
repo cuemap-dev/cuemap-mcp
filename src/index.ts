@@ -6,7 +6,7 @@ import { z } from "zod";
 import CueMap from "cuemap";
 import { EmbeddedCueMap } from "cuemap/embedded";
 import { File } from "node:buffer";
-import { readFileSync, statSync } from "node:fs";
+import { readFileSync, statSync, writeFileSync } from "node:fs";
 import path from "path";
 import { createHash } from "crypto";
 import { spawnSync } from "child_process";
@@ -69,6 +69,9 @@ async function startEngine(): Promise<void> {
             "chunk_embeddings_v1",
             "intent_classification_v1",
             "intent_job_status_v1",
+            "project_lifecycle_v1",
+            "project_packages_v1",
+            "project_sync_v1",
         ],
         configPath: process.env.CUEMAP_CONFIG_PATH,
         apiKey: process.env.CUEMAP_API_KEY,
@@ -129,21 +132,38 @@ async function engineRequest<T>(
     body?: unknown,
     project?: string,
 ): Promise<T> {
+    const response = await engineRawRequest(
+        method,
+        requestPath,
+        body === undefined ? undefined : JSON.stringify(body),
+        project,
+        "application/json",
+    );
+    return await response.json() as T;
+}
+
+async function engineRawRequest(
+    method: "GET" | "POST" | "PATCH" | "DELETE",
+    requestPath: string,
+    body?: BodyInit,
+    project?: string,
+    contentType?: string,
+): Promise<Response> {
     if (!CUEMAP_URL) throw new Error("CueMap engine URL is not available");
     const response = await fetch(`${CUEMAP_URL}${requestPath}`, {
         method,
         headers: {
-            ...(body === undefined ? {} : { "content-type": "application/json" }),
+            ...(body === undefined || !contentType ? {} : { "content-type": contentType }),
             ...(process.env.CUEMAP_API_KEY ? { "X-API-Key": process.env.CUEMAP_API_KEY } : {}),
             ...(project ? { "X-Project-ID": project } : {}),
         },
-        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        ...(body === undefined ? {} : { body }),
     });
     if (!response.ok) {
         const message = await response.text();
         throw new Error(`CueMap returned HTTP ${response.status}: ${message}`);
     }
-    return await response.json() as T;
+    return response;
 }
 
 async function main() {
@@ -432,7 +452,7 @@ async function main() {
     server.registerTool(
         "cuemap_projects",
         {
-            description: "List CueMap projects and their available summary metadata.",
+            description: "List CueMap projects, summary metadata, and whether each project is currently loaded in RAM.",
             inputSchema: z.object({}),
         },
         async () => {
@@ -440,6 +460,221 @@ async function main() {
                 return jsonToolResult(await client.listProjects());
             } catch (error) {
                 return toolError("cuemap_projects", error);
+            }
+        },
+    );
+
+    server.registerTool(
+        "cuemap_project_save",
+        {
+            description: "Persist the current state of a CueMap project without unloading it. Package operations save automatically; use this only when an explicit durable checkpoint is useful.",
+            inputSchema: z.object({
+                project: z.string().min(1).optional().describe("Project ID to save. Defaults to the repository-scoped project."),
+            }),
+        },
+        async (args) => {
+            try {
+                const project = args.project || DEFAULT_PROJECT;
+                return jsonToolResult(await engineRequest(
+                    "POST",
+                    `/projects/${encodeURIComponent(project)}/save`,
+                    undefined,
+                    project,
+                ));
+            } catch (error) {
+                return toolError("cuemap_project_save", error);
+            }
+        },
+    );
+
+    server.registerTool(
+        "cuemap_project_load",
+        {
+            description: "Load a persisted CueMap project into RAM before a latency-sensitive operation. Normal project requests load automatically, so use this for explicit warm-up.",
+            inputSchema: z.object({
+                project: z.string().min(1).optional().describe("Project ID to load. Defaults to the repository-scoped project."),
+            }),
+        },
+        async (args) => {
+            try {
+                const project = args.project || DEFAULT_PROJECT;
+                return jsonToolResult(await engineRequest(
+                    "POST",
+                    `/projects/${encodeURIComponent(project)}/load`,
+                    undefined,
+                    project,
+                ));
+            } catch (error) {
+                return toolError("cuemap_project_load", error);
+            }
+        },
+    );
+
+    server.registerTool(
+        "cuemap_project_unload",
+        {
+            description: "Persist and unload a CueMap project from RAM to reduce memory use. Use only when the user explicitly asks to unload or free inactive project memory; active projects return a retryable busy error.",
+            inputSchema: z.object({
+                project: z.string().min(1).optional().describe("Project ID to unload. Defaults to the repository-scoped project."),
+            }),
+        },
+        async (args) => {
+            try {
+                const project = args.project || DEFAULT_PROJECT;
+                return jsonToolResult(await engineRequest(
+                    "POST",
+                    `/projects/${encodeURIComponent(project)}/unload`,
+                    undefined,
+                    project,
+                ));
+            } catch (error) {
+                return toolError("cuemap_project_unload", error);
+            }
+        },
+    );
+
+    server.registerTool(
+        "cuemap_project_pack",
+        {
+            description: "Write a ready-to-query .cuemap package for one project to a local file. The package contains sensitive project content; use only after the user explicitly approves the exact output path.",
+            inputSchema: z.object({
+                project: z.string().min(1).optional().describe("Project ID to package. Defaults to the repository-scoped project."),
+                output_path: z.string().min(1).describe("Absolute local path for the .cuemap file."),
+                overwrite: z.boolean().optional().describe("Replace an existing output file. Default is false."),
+                confirmed: z.boolean().optional().describe("Must be true after explicit user approval of the output path and any overwrite."),
+            }),
+        },
+        async (args) => {
+            if (!args.confirmed) return confirmationRequired("project packaging");
+            try {
+                if (!path.isAbsolute(args.output_path)) {
+                    throw new Error("output_path must be absolute");
+                }
+                const project = args.project || DEFAULT_PROJECT;
+                const response = await engineRawRequest(
+                    "POST",
+                    `/projects/${encodeURIComponent(project)}/pack`,
+                    undefined,
+                    project,
+                );
+                const packageData = Buffer.from(await response.arrayBuffer());
+                writeFileSync(args.output_path, packageData, {
+                    flag: args.overwrite ? "w" : "wx",
+                });
+                return jsonToolResult({
+                    status: "packed",
+                    project_id: project,
+                    output_path: args.output_path,
+                    size_bytes: packageData.byteLength,
+                });
+            } catch (error) {
+                return toolError("cuemap_project_pack", error);
+            }
+        },
+    );
+
+    server.registerTool(
+        "cuemap_project_package_load",
+        {
+            description: "Install and warm a local .cuemap package. Use only after the user explicitly approves the exact package path; existing projects are never overwritten.",
+            inputSchema: z.object({
+                package_path: z.string().min(1).describe("Absolute local path to the .cuemap package."),
+                confirmed: z.boolean().optional().describe("Must be true after explicit user approval of the package path."),
+            }),
+        },
+        async (args) => {
+            if (!args.confirmed) return confirmationRequired("project package loading");
+            try {
+                if (!path.isAbsolute(args.package_path)) {
+                    throw new Error("package_path must be absolute");
+                }
+                const stats = statSync(args.package_path);
+                if (!stats.isFile()) throw new Error("package_path must reference a regular file");
+                const response = await engineRawRequest(
+                    "POST",
+                    "/projects/load",
+                    readFileSync(args.package_path),
+                    undefined,
+                    "application/vnd.cuemap.project",
+                );
+                return jsonToolResult(await response.json());
+            } catch (error) {
+                return toolError("cuemap_project_package_load", error);
+            }
+        },
+    );
+
+    server.registerTool(
+        "cuemap_project_push",
+        {
+            description: "Pack and upload a CueMap project with the engine host's configured AWS CLI. Use only after explicit approval of the exact S3 destination; an existing object at that URI may be replaced.",
+            inputSchema: z.object({
+                project: z.string().min(1).optional().describe("Project ID to push. Defaults to the repository-scoped project."),
+                destination: z.string().startsWith("s3://").describe("Exact S3 object URI or prefix."),
+                confirmed: z.boolean().optional().describe("Must be true after explicit user approval of the S3 destination."),
+            }),
+        },
+        async (args) => {
+            if (!args.confirmed) return confirmationRequired("project package upload");
+            try {
+                const project = args.project || DEFAULT_PROJECT;
+                return jsonToolResult(await engineRequest(
+                    "POST",
+                    `/projects/${encodeURIComponent(project)}/push`,
+                    { destination: args.destination },
+                    project,
+                ));
+            } catch (error) {
+                return toolError("cuemap_project_push", error);
+            }
+        },
+    );
+
+    server.registerTool(
+        "cuemap_project_pull",
+        {
+            description: "Download, install, and warm a .cuemap package with the engine host's configured AWS CLI. Use only after explicit approval of the exact S3 source; existing projects are never overwritten.",
+            inputSchema: z.object({
+                source: z.string().startsWith("s3://").describe("Exact S3 object URI for a .cuemap package."),
+                confirmed: z.boolean().optional().describe("Must be true after explicit user approval of the S3 source."),
+            }),
+        },
+        async (args) => {
+            if (!args.confirmed) return confirmationRequired("project package download and load");
+            try {
+                return jsonToolResult(await engineRequest(
+                    "POST",
+                    "/projects/pull",
+                    { source: args.source },
+                ));
+            } catch (error) {
+                return toolError("cuemap_project_pull", error);
+            }
+        },
+    );
+
+    server.registerTool(
+        "cuemap_project_sync",
+        {
+            description: "Fast-forward a project through immutable history at an S3 sync root. Pushes local-only changes, pulls remote-only changes, and refuses divergent histories or stale concurrent writes. Use only after explicit approval of the project and exact S3 root.",
+            inputSchema: z.object({
+                project: z.string().min(1).optional().describe("Project ID to synchronize. Defaults to the repository-scoped project."),
+                remote: z.string().startsWith("s3://").describe("Exact S3 root used for this project's sync history."),
+                confirmed: z.boolean().optional().describe("Must be true after explicit user approval of the project and S3 sync root."),
+            }),
+        },
+        async (args) => {
+            if (!args.confirmed) return confirmationRequired("project synchronization");
+            try {
+                const project = args.project || DEFAULT_PROJECT;
+                return jsonToolResult(await engineRequest(
+                    "POST",
+                    `/projects/${encodeURIComponent(project)}/sync`,
+                    { remote: args.remote },
+                    project,
+                ));
+            } catch (error) {
+                return toolError("cuemap_project_sync", error);
             }
         },
     );
