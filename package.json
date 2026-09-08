@@ -15,10 +15,11 @@
   "scripts": {
     "build": "tsc",
     "test": "npm run build && node --test test/*.test.cjs",
-    "test:e2e": "CUEMAP_E2E=1 node --test test/*.test.cjs",
+    "test:e2e": "npm run build && node scripts/run-e2e.cjs",
     "test:pack": "node scripts/verify-packed-install.cjs",
     "start": "node build/index.js",
-    "dev": "tsc --watch"
+    "dev": "tsc --watch",
+    "prepublishOnly": "npm test"
   },
   "keywords": [
     "mcp",
@@ -36,7 +37,7 @@
   "type": "commonjs",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.27.1",
-    "cuemap": "^0.7.2",
+    "cuemap": "^0.7.3",
     "zod": "^4.3.6"
   },
   "devDependencies": {
@@ -44,9 +45,10 @@
     "typescript": "^5.9.3"
   },
   "optionalDependencies": {
-    "@cuemap-dev/engine-darwin-arm64": "^0.7.2",
-    "@cuemap-dev/engine-darwin-x64": "^0.7.2",
-    "@cuemap-dev/engine-linux-x64": "^0.7.2",
-    "@cuemap-dev/engine-win32-x64": "^0.7.2"
+    "@cuemap-dev/engine-darwin-arm64": "^0.7.3",
+    "@cuemap-dev/engine-darwin-x64": "^0.7.3",
+    "@cuemap-dev/engine-linux-x64": "^0.7.3",
+    "@cuemap-dev/engine-win32-x64": "^0.7.3",
+    "@cuemap-dev/engine-linux-arm64": "^0.7.3"
   }
 }
