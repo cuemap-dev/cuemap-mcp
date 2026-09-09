@@ -8,11 +8,17 @@
 - Documented mobile-language ingestion for Swift, Dart, Objective-C, and Kotlin repositories.
 - Documented the separately published CueMap Agent Plugin integration.
 - Changed the embedded engine's preferred default port from `8080` to `8735`; `CUEMAP_PORT` remains available for overrides.
+- Updated tool and skill guidance for focused, iterative coding investigations using existing recall controls and direct source inspection.
 
 ### Added
 
 - Added project save/load/unload tools and confirmed `.cuemap` pack/load/push/pull tools; `cuemap_projects` reports whether each project is currently loaded.
 - Added confirmed `cuemap_project_sync` with immutable history and divergence protection.
+- Preview shaping now lives in the engine. MCP forwards the options and preserves its response; older engines report an explicit unsupported-preview error instead of silently returning full chunks.
+- Added opt-in recall `response_mode: "preview"` with bounded `preview_chars` for broad discovery. Returns leading excerpts and truncation flags in both MCP output forms, retaining evidence handles and metadata; full content remains the default.
+- Memory inspection requests `GET /memories/:id?decoded=true` and returns readable source evidence without storage bytes or vectors. Requires an engine supporting decoded reads; older engines produce an explicit upgrade error for this tool.
+- Recall now returns engine JSON in both text and MCP structured content, preserving source metadata, diagnostics, empty project groups, and project errors. Memory records expose project-scoped `memory_id` handles for follow-up inspection. This replaces the previous prose-only response format.
+
 
 ## [0.7.2] - 2026-08-04
 

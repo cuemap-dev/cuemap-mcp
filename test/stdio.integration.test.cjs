@@ -134,9 +134,58 @@ test("serves the packed MCP protocol against a real release engine", {
             cues: ["billing", "postgres"],
             semantic_mode: "lexical",
             limit: 5,
+            explain: true,
+            trace_timing: true,
         },
     });
     assert.match(textOf(recalled), /Postgres/);
+    const evidence = JSON.parse(textOf(recalled));
+    assert.deepEqual(evidence, recalled.structuredContent);
+    const group = evidence.results.find((item) => item.project_id === project);
+    assert.ok(group.explain, "per-project explanation survives MCP formatting");
+    const hit = group.results.find((item) => item.content.includes("Postgres"));
+    assert.equal(hit.project_id, project);
+    assert.ok(Number.isInteger(hit.memory_id));
+    const fetched = await client.callTool({
+        name: "cuemap_memory_get",
+        arguments: { project: hit.project_id, memory_id: hit.memory_id },
+    });
+    assert.match(textOf(fetched), /Postgres/);
+
+    const defaultRecall = await client.callTool({
+        name: "cuemap_recall",
+        arguments: { query: "billing Postgres", semantic_mode: "lexical", limit: 3, trace_timing: true },
+    });
+    const defaultEvidence = JSON.parse(textOf(defaultRecall));
+    assert.deepEqual(defaultEvidence, defaultRecall.structuredContent);
+    assert.ok(defaultEvidence.timing, "single-project timing survives MCP formatting");
+    assert.ok(defaultEvidence.results.length > 0);
+    assert.equal(defaultEvidence.results[0].project_id, project);
+    assert.ok(Number.isInteger(defaultEvidence.results[0].memory_id));
+
+    const previewSource = "Preview discovery source. " + "Supporting implementation detail. ".repeat(40);
+    await client.callTool({ name: "cuemap_add", arguments: {
+        project, content: previewSource, source_key: "mcp-e2e:preview", disable_temporal_chunking: true,
+    } });
+    const previewRecall = await client.callTool({ name: "cuemap_recall", arguments: {
+        projects: [project], query: "Preview discovery source", semantic_mode: "lexical",
+        response_mode: "preview", preview_chars: 100, limit: 3,
+    } });
+    const previewEvidence = JSON.parse(textOf(previewRecall));
+    assert.deepEqual(previewEvidence, previewRecall.structuredContent);
+    const previewHit = previewEvidence.results[0].results.find((hit) => hit.preview.startsWith("Preview discovery source."));
+    assert.ok(previewHit);
+    assert.equal(previewHit.content, undefined);
+    assert.equal(previewHit.preview, previewSource.slice(0, 100));
+    assert.equal(previewHit.content_truncated, true);
+    const fullMemory = await client.callTool({ name: "cuemap_memory_get", arguments: {
+        project: previewHit.project_id, memory_id: previewHit.memory_id,
+    } });
+    assert.equal(JSON.parse(textOf(fullMemory)).content, previewSource);
+    const invalidPreview = await client.callTool({ name: "cuemap_recall", arguments: {
+        query: "test", response_mode: "preview", preview_chars: 0,
+    } });
+    assert.equal(invalidPreview.isError, true);
 
     const guarded = await client.callTool({
         name: "cuemap_memory_delete",

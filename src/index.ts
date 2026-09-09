@@ -11,6 +11,7 @@ import path from "path";
 import { createHash } from "crypto";
 import { spawnSync } from "child_process";
 import { CueMapJobStatus, evaluateJobStatus } from "./job-status.js";
+import { memoryToolResult, recallToolResult } from "./recall-result.js";
 
 let embeddedEngine: EmbeddedCueMap | null = null;
 let CUEMAP_URL = process.env.CUEMAP_URL;
@@ -331,7 +332,7 @@ async function main() {
             inputSchema: z.object({
                 content: z.string().min(1).describe("The natural-language memory content to store."),
                 project: z.string().min(1).optional().describe("Optional project ID. Defaults to a stable ID derived from the current Git repository."),
-                cues: z.array(z.string()).optional().describe("Optional explicit cues/tags to associate with the memory."),
+                cues: z.array(z.string()).optional().describe("Normally omit: CueMap generates cues from content automatically. Optionally add deliberate reusable tags, e.g. type:conversation for an explicitly saved conversation."),
                 metadata: z.record(z.string(), z.unknown()).optional().describe("Optional JSON metadata to store with the memory."),
                 source_key: z.string().optional().describe("Optional stable source key for deterministic upsert/deduplication."),
                 event_time: z.number().nonnegative().optional().describe("Optional original event timestamp as Unix seconds. Defaults to ingestion time."),
@@ -704,7 +705,7 @@ async function main() {
     server.registerTool(
         "cuemap_memory_get",
         {
-            description: "Get one CueMap memory by numeric ID.",
+            description: "Get one stored memory as readable text with source metadata. Pass the memory_id and owning project_id from recall as memory_id and project. Does not expand neighbors or read live source files.",
             inputSchema: z.object({
                 memory_id: z.number().int().nonnegative().max(4_294_967_295),
                 project: z.string().min(1).optional().describe("Optional project ID. Defaults to the repository-scoped project."),
@@ -713,9 +714,9 @@ async function main() {
         async (args) => {
             try {
                 const project = args.project || DEFAULT_PROJECT;
-                return jsonToolResult(await engineRequest(
+                return memoryToolResult(await engineRequest(
                     "GET",
-                    `/memories/${args.memory_id}`,
+                    `/memories/${args.memory_id}?decoded=true`,
                     undefined,
                     project,
                 ));
@@ -810,7 +811,7 @@ async function main() {
                 filename: z.string().min(1).optional().describe("Logical source filename used for type detection. Default is content.txt."),
                 source_key: z.string().optional().describe("Stable source key for deterministic replacement or deduplication."),
                 metadata: z.record(z.string(), z.unknown()).optional(),
-                structural_cues: z.array(z.string()).optional(),
+                structural_cues: z.array(z.string()).optional().describe("Normally omit: CueMap extracts structural cues automatically. Optionally add reliable source structure or a reusable category such as type:conversation."),
                 embeddings: z.array(z.array(z.number()).nonempty()).optional().describe("Optional one-vector-per-produced-chunk embeddings."),
                 segmenter: z.enum(["sentence_window", "logical_block"]).optional(),
                 segment_window_size: z.number().int().positive().optional(),
@@ -1067,15 +1068,17 @@ async function main() {
     server.registerTool(
         "cuemap_recall",
         {
-            description: "Recall ranked context from CueMap using lexical, semantic, or hybrid query signals. Hybrid is the engine default and uses the configured local encoder to rerank lexical candidates.",
+            description: "Recall evidence for a focused question; follow up with narrower queries as needed. Returns engine JSON with project_id and memory_id handles, source metadata, and requested diagnostics in text and structuredContent. Use handles with cuemap_memory_get when the stored record is needed. Hybrid locally reranks lexical candidates. Start with a small limit and depth 1; enable reconstruction only when surrounding evidence is needed.",
             inputSchema: z.object({
                 query: z.string().describe("The natural language query to search the codebase memory for."),
+                response_mode: z.enum(["full", "preview"]).optional().describe("Default full. Use preview for broad discovery to return only a leading excerpt per hit, with IDs and source metadata. Fetch promising stored memories with cuemap_memory_get; previews are not complete evidence."),
+                preview_chars: z.number().int().min(100).max(2000).optional().describe("Maximum leading content length per hit in preview mode (100–2000 UTF-16 code units; default 200). Does not cap metadata or diagnostics. Ignored in full mode."),
                 limit: z.number().optional().describe("Optional limit on the number of results to return. Default is 10."),
                 projects: z.array(z.string()).optional().describe("Optional list of project IDs to scope the search to. Provide multiple for cross-project recall. If not provided, searches the default project."),
-                cues: z.array(z.string()).optional().describe("Optional list of specific cues/tags to filter the search."),
+                cues: z.array(z.string()).optional().describe("Normally omit: CueMap generates cues from the query. Supply known tags only to deliberately narrow lexical/hybrid recall, e.g. type:conversation to search tagged conversations."),
                 query_time: z.string().optional().describe("Optional timestamp or natural-language time anchor used by v0.7 temporal query intent."),
                 depth: z.number().optional().describe("Depth of multi-hop recall. Default is 1."),
-                expansion_depth: z.number().optional().describe("Alias/cue expansion depth. Default is 1."),
+                expansion_depth: z.number().optional().describe("Neighbor context expansion. 1 returns the matched chunk; values above 1 include nearby parent chunks or source-ordered context with radius expansion_depth - 1 when linkage exists. Default is 1."),
                 auto_reinforce: z.boolean().optional().describe("Automatically reinforce retrieved memories. Default is false."),
                 min_intersection: z.number().optional().describe("Minimum intersection count for retrieval. Default is 0."),
                 explain: z.boolean().optional().describe("Include explain component for debug information in results. Default is false."),
@@ -1103,6 +1106,7 @@ async function main() {
             try {
                 const {
                     query, limit = 10, projects, cues, query_time,
+                    response_mode = "full", preview_chars = 200,
                     depth = 1, expansion_depth = 1, auto_reinforce = false, min_intersection,
                     explain = false, trace_timing = false,
                     disable_salience_bias = false, disable_alias_expansion = true,
@@ -1117,6 +1121,8 @@ async function main() {
 
                 const results = await client.recall({
                     query_text: query,
+                    response_mode,
+                    preview_chars,
                     cues,
                     projects,
                     limit,
@@ -1146,56 +1152,11 @@ async function main() {
                     query_embedding,
                 } as any);
 
-                let items: any[] = [];
-
-                if (results.results && Array.isArray(results.results)) {
-                    if (results.results.length > 0 && results.results[0].project_id) {
-                        results.results.forEach((projectRes: any) => {
-                            if (projectRes.results && Array.isArray(projectRes.results)) {
-                                items = items.concat(projectRes.results.map((r: any) => ({ ...r, project_id: projectRes.project_id })));
-                            }
-                        });
-                    } else {
-                        items = results.results;
-                    }
-                }
-
-                if (!items || items.length === 0) {
-                    return {
-                        content: [
-                            {
-                                type: "text" as const,
-                                text: "No results found for the query in CueMap.",
-                            },
-                        ],
-                    };
-                }
-
-                let formattedText = `CueMap found ${items.length} relevant memories:\n\n`;
-                items.forEach((r: any, i: number) => {
-                    const scoreStr = r.score !== undefined ? ` (Score: ${Number(r.score).toFixed(2)})` : '';
-                    formattedText += `### Result ${i + 1}${scoreStr}\n`;
-                    const projectId = r.project_id || (projects && projects.length === 1 ? projects[0] : null);
-                    if (projectId) formattedText += `*Project: ${projectId}*\n`;
-                    if (r.timestamp) {
-                        const date = new Date(r.timestamp);
-                        formattedText += `*Timestamp: ${date.toISOString()}*\n`;
-                    } else if (r.created_at) {
-                        const date = new Date(r.created_at * 1000);
-                        formattedText += `*Timestamp: ${date.toISOString()}*\n`;
-                    }
-
-                    formattedText += `${r.content}\n\n`;
-                });
-
-                return {
-                    content: [
-                        {
-                            type: "text" as const,
-                            text: formattedText,
-                        },
-                    ],
-                };
+                return recallToolResult(
+                    results,
+                    !projects?.length ? DEFAULT_PROJECT : projects.length === 1 ? projects[0] : undefined,
+                    { response_mode },
+                );
             } catch (error: any) {
                 console.error("Error calling CueMap engine", error);
                 return {

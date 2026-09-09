@@ -114,7 +114,7 @@ To use this MCP server with your AI assistant, add it to your assistant's MCP co
   S3 using the engine host's configured AWS CLI.
 - **`cuemap_project_sync`**: Fast-forward immutable S3 history and refuse divergence.
 - **`cuemap_stats`**: Read repository-project statistics, or global engine statistics with `global: true`.
-- **`cuemap_memory_get`**: Read one memory by numeric `memory_id`.
+- **`cuemap_memory_get`**: Read one memory as decoded text and provenance by numeric `memory_id` and owning `project`. Requires an engine supporting `GET /memories/:id?decoded=true`; older engines return an upgrade error through this tool.
 - **`cuemap_memory_reinforce`**: Reinforce one memory, optionally on explicit `cues`.
 - **`cuemap_memory_delete`**: Permanently delete one memory. Requires `confirmed: true` after explicit user confirmation.
 - **`cuemap_project_export`**: Export a cursor-paginated project page with configurable content, cue, and metadata inclusion.
@@ -148,11 +148,13 @@ These tools are for explicit ingestion requests. Repository initialization conti
 - **`cuemap_recall`**: Recalls context about a codebase from your CueMap integrated brain. Uses natural language and semantic search to find relevant information.
   - `query` (string): The natural language query to search for.
   - `limit` (number, optional): Maximum results to return (default: 10).
+  - `response_mode` (`full` | `preview`, optional): Default `full`. Use `preview` for broad discovery; each hit returns a leading excerpt instead of full content, retaining IDs and metadata.
+  - `preview_chars` (integer, optional): Preview length cap, 100–2000 UTF-16 code units (default: 200). Ignored in full mode. Metadata and diagnostics are not capped.
   - `projects` (string[], optional): List of project IDs to scope the search to. Multiple enables cross-project queries.
   - `cues` (string[], optional): Specific cue tags to filter the search.
   - `query_time` (string, optional): Timestamp or natural-language time anchor for v0.7 temporal query intent.
   - `depth` (number, optional): Depth of multi-hop recall expander (default: 1).
-  - `expansion_depth` (number, optional): Alias/cue expansion depth (default: 1).
+  - `expansion_depth` (number, optional): Neighbor context expansion (default: 1). Values above 1 include nearby parent chunks or source-ordered context, using a radius of `expansion_depth - 1` when linkage exists.
   - `auto_reinforce` (boolean, optional): Automatically reinforce retrieved memories (default: false).
   - `min_intersection` (number, optional): Minimum required cue intersection count (default: 0).
   - `explain` (boolean, optional): Include scoring explanation data in results (default: false).
@@ -166,6 +168,31 @@ These tools are for explicit ingestion requests. Repository initialization conti
   - `cuebridge_gap_limit` (number, optional): Maximum CueBridge gap expansions.
   - `semantic_mode` (`lexical`, `semantic`, or `hybrid`, optional): Choose cue-only recall, vector candidate discovery, or local semantic reranking of lexical candidates. The engine default is `hybrid`.
 - `query_embedding` (number[], optional): Supply a precomputed query vector when the calling application owns the embedding provider.
+
+### Recall response and follow-up inspection
+
+Recall returns engine JSON in both MCP `structuredContent` and a matching JSON
+text block. This replaces the earlier prose-only format. Each identified
+memory carries `project_id` and `memory_id`; metadata, source locations, and
+requested diagnostics are preserved as supplied by the engine. Explicit
+project queries may return project blocks containing their own `results` or
+`error`, including empty groups. Ordinary unscoped queries return memory
+records directly in `results`.
+
+Use a hit's project and ID with `cuemap_memory_get` when the stored record is
+needed. That tool returns readable content without vectors or compressed
+storage bytes; it does not expand neighboring chunks or read live files.
+Prefer opening the cited source when recall already returned the relevant
+text. Follow-up recalls should address a new evidence gap. See [SKILL.md](SKILL.md)
+for the coding investigation workflow and bounded recall controls.
+
+For broad discovery, pass `response_mode: "preview"`. A hit's `content` is
+replaced by `preview`, `content_truncated`, and `content_length` (UTF-16 code
+units). This is a leading excerpt, not a generated summary or query-selected
+snippet. Full content is omitted from both MCP output forms; fetch promising
+memories by their project/ID or read the live source. Full mode remains the
+default. The engine shapes previews before sending its response. This does not change
+ranking or retrieval work, and does not limit metadata or diagnostics.
 
 ## License
 

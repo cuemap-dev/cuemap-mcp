@@ -17,8 +17,9 @@ interface, so use them exactly as written.
 
 ## Operating principles
 
-1. Ground repository questions in CueMap before making a claim about code,
-   configuration, a previous decision, or a past action.
+1. Use CueMap when missing repository context, prior decisions, or past actions
+   could change your next step. Reuse evidence already available; a lookup is
+   not mandatory when the current files already answer the question.
 2. Keep repository identity explicit. Carry the `project_id` returned by
    `cuemap_init_preview` into later `projects` or `project` arguments.
 3. Prefer the default `hybrid` recall mode: deterministic cue/lexical
@@ -34,6 +35,23 @@ interface, so use them exactly as written.
    a memory, ingesting a file, and crawling a URL require an explicit user
    request. Repository initialization requires explicit confirmation of its
    proposed scope.
+
+### Cues are automatic; explicit tags are optional
+
+Normally supply the content to ingest or the natural-language query to recall,
+without a cue list. CueMap generates cues from that text and adds structural
+facets and query-plan signals where applicable. Agents do not need to repeat
+keywords, infer a taxonomy, or supply cues on every call.
+
+Explicit cues are useful for deliberate organization or narrowing. For
+example, when the user asks to save a conversation into a project, attach
+`type:conversation` as a reusable category: `cues: ["type:conversation"]`
+with `cuemap_add`, or `structural_cues: ["type:conversation"]` with
+`cuemap_ingest_content`. Later, use a natural-language query with
+`cues: ["type:conversation"]` in lexical or hybrid recall when the user wants
+to search only that category. Omit the cue for searches across all content.
+This is an optional caller-chosen tag, not a required built-in category or a
+replacement for project scope, speaker/session metadata, or automatic cues.
 
 ## First-time repository setup
 
@@ -204,8 +222,8 @@ useful `filename` such as `incident-2026-09.md`, `settings.toml`, or
 
 Use a stable `source_key` when the same logical source will be replaced. Add
 `metadata` for provenance such as `{ "kind": "decision", "ticket": "ABC-123" }`.
-Use `structural_cues` when the caller has reliable source structure that the
-filename cannot express.
+Normally omit `structural_cues`; add them only for a deliberate reusable
+category or reliable source structure that the filename cannot express.
 
 For segmentation:
 
@@ -265,6 +283,69 @@ local reranking or vector signal, not an answer generator. Never ask CueMap to
 invent an answer from a semantic score; read the returned original memories
 and cite or inspect their source context.
 
+### Investigate incrementally
+
+For broad discovery, use `response_mode: "preview"` when you want to survey
+which files or topics match before paying the context cost of full chunks.
+For example:
+
+```json
+{"query":"Where is request retry behavior implemented?","projects":["<project_id>"],"limit":10,"response_mode":"preview","preview_chars":200}
+```
+
+Each hit has a leading `preview`, `content_truncated`, and `content_length`
+instead of full `content`, while retaining its evidence handle and source
+metadata. `preview_chars` defaults to 200 (range 100–2000, measured in UTF-16
+code units). Both text and structured outputs omit the full content. The
+excerpt is not a summary or a query-selected match: useful details may occur
+later. Inspect a promising hit via `cuemap_memory_get` or the live source
+before drawing conclusions from omitted text. A stored-memory fetch does not
+reproduce any neighbors or reconstruction included in the original recall.
+
+Use the default `response_mode: "full"` for focused lookups where you expect
+to use the evidence immediately; previews can otherwise add an unnecessary
+round trip. For discovery keep reconstruction and diagnostics off unless
+needed. Preview limits content only, not metadata or requested diagnostics;
+the engine omits full content before sending the response, reducing both
+engine-to-client payloads and agent input without changing retrieval work.
+
+CueMap is a context sidekick throughout coding work. Ask again when the work
+reveals a concrete missing dependency, caller, decision, or test; do not try
+to collect the entire repository before starting. Prefer a small first recall
+(`limit: 3–5`, `depth: 1`, hybrid) and use the returned terminology to narrow
+the next question. These are starting points, not fixed limits or a required
+number of calls.
+
+For example, to change retry behavior, ask where retry policy is applied.
+Open the returned source, then ask about callers of the actual symbol or tests
+for the specific failure case only if that evidence is still missing. If an
+exact path or symbol is already known, a direct file read or `rg` may be the
+shortest next step. Stop recalling when you have enough evidence to act or
+answer; repeated unchanged queries do not constitute verification.
+
+Recall returns the same JSON in text and `structuredContent`. Ordinary
+responses contain memory records in `results`; explicit project searches may
+contain per-project blocks with their own `results`, diagnostics, or errors.
+Each identified hit carries `project_id` and `memory_id`. Keep that pair:
+numeric IDs can collide across projects. Metadata preserves source locations
+and parent/session references when the engine supplies them. Explanation and
+timing fields are preserved when supplied, including on empty responses.
+
+Use `cuemap_memory_get({ project: hit.project_id, memory_id: hit.memory_id })`
+to fetch that stored memory when needed. It does not automatically expand
+neighbors or fetch the live file, and re-fetching a fully returned chunk is
+usually redundant. Reconstructed results can combine evidence; inspect their
+metadata and original sources before treating the representative ID as the
+whole result. If a handle is missing, do not invent one.
+
+When context is incomplete, enable only the applicable reconstruction mode
+or ask a narrower follow-up. When terminology does not overlap, reformulate
+or deliberately try semantic discovery; it has a different cost profile.
+Keep diagnostics off during ordinary work and do not reinforce memories
+merely because they were returned. Empty results mean no evidence found for
+that search, not that the code or behavior does not exist. Per-project errors
+are failures to search those projects, not empty evidence.
+
 ## Recall knob decision guide
 
 Start with defaults. Add only the knobs that match the question.
@@ -276,12 +357,15 @@ Start with defaults. Add only the knobs that match the question.
 - `min_intersection`: use `1` or `2` when a query has meaningful cues and false
   positives are costly. Leave it unset/zero for broad discovery or when the
   query is short.
-- `cues`: use known, exact cue names to narrow a search. Do not manufacture a
-  large cue list from every word in the question.
+- `cues`: normally omit; the query already generates cues. Supply known cue
+  names only when intentionally restricting the search to that category or
+  evidence. Unnecessary constraints can exclude useful results.
 - `depth`: keep at `1` for direct questions. Use `2` or `3` for a deliberate
   multi-hop chain; increase gradually and verify each hop.
-- `expansion_depth`: keep at `1` for normal recall. Use `2` only when vetted
-  aliases or cue relationships are necessary.
+- `expansion_depth`: keep at `1` for the matched chunk alone. Use `2` to
+  include immediate neighboring parent chunks or source-ordered context when
+  linkage exists; larger values widen the window. This expands returned
+  content, not aliases, and adds reads and tokens to each affected hit.
 - `disable_alias_expansion`: it defaults to `true` in the MCP wrapper. Keep it
   disabled when exactness matters. Set it to `false` only when the project has
   trustworthy aliases or the user explicitly wants related terminology.
@@ -347,8 +431,8 @@ depth.
 
 ### Natural-language behavior question
 
-Use the default `hybrid` mode, `limit: 10`, and `explain: true` when the answer
-needs verification. Query for behavior plus the likely subsystem, for example
+Use the default `hybrid` mode and a small limit. Enable `explain: true` to
+diagnose retrieval selection, not to verify code correctness. Query for behavior plus the likely subsystem, for example
 “How does directory ingestion remove stale chunks?”
 
 ### Paraphrase or unfamiliar terminology
@@ -383,8 +467,8 @@ very large `limit`.
    available metadata or explanation.
 2. Prefer evidence whose content directly answers the question over a merely
    high-scoring but generic memory.
-3. If a result points to a memory ID or source, call `cuemap_memory_get` or run
-   a narrower recall to inspect it.
+3. Follow a useful source location directly. Fetch by memory ID only when you
+   need the stored record; use a narrower recall for a new evidence gap.
 4. For code work, verify the relevant path and symbol against the live
    repository before editing. CueMap is a memory/index, not a substitute for
    opening the current file.
@@ -408,8 +492,8 @@ project when the memory belongs there.
   replace or deduplicate the same memory;
 - `event_time`: preserve when the fact happened, not merely when it was
   entered;
-- `cues`: add a small set of reliable tags; deterministic extraction still
-  runs;
+- `cues`: normally omit and let CueMap extract them. Optionally add a reliable
+  category such as `type:conversation` for explicitly saved conversations;
 - `metadata`: store provenance, ticket IDs, authorship, or domain labels;
 - `async_ingest: true`: use when the caller wants an immediate acknowledgment
   and can poll status separately;
@@ -480,7 +564,7 @@ Obtain confirmation from the user in the current interaction.
 ## Performance-aware defaults
 
 For the normal hot path, use hybrid recall with a focused query, one explicit
-project, `limit` around 10, `depth: 1`, `expansion_depth: 1`, no automatic
+project, `limit` around 3–5 initially, `depth: 1`, `expansion_depth: 1`, no automatic
 reinforcement, and no reconstruction mode unless the question needs it. Keep
 `explain` and `trace_timing` off after diagnosis.
 
