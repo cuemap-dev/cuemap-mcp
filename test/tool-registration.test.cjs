@@ -12,6 +12,14 @@ const expectedTools = [
     "cuemap_intent_classify",
     "cuemap_status",
     "cuemap_projects",
+    "cuemap_project_save",
+    "cuemap_project_load",
+    "cuemap_project_unload",
+    "cuemap_project_pack",
+    "cuemap_project_package_load",
+    "cuemap_project_push",
+    "cuemap_project_pull",
+    "cuemap_project_sync",
     "cuemap_stats",
     "cuemap_memory_get",
     "cuemap_memory_reinforce",
@@ -48,7 +56,7 @@ test("does not register grounded recall", () => {
     );
 });
 
-test("recall exposes the v0.7.2 semantic contract", () => {
+test("recall exposes the v0.7.3 semantic contract", () => {
     const start = builtServer.indexOf('registerTool("cuemap_recall"');
     const registration = builtServer.slice(start);
     for (const field of ["semantic_mode", "query_embedding"]) {
@@ -70,6 +78,11 @@ test("guards destructive and canonicalizing tools with confirmation", () => {
         "cuemap_memory_delete",
         "cuemap_alias_merge",
         "cuemap_lexicon_delete",
+        "cuemap_project_pack",
+        "cuemap_project_package_load",
+        "cuemap_project_push",
+        "cuemap_project_pull",
+        "cuemap_project_sync",
     ]) {
         const start = builtServer.indexOf(`registerTool("${tool}"`);
         const next = builtServer.indexOf("registerTool(", start + 1);

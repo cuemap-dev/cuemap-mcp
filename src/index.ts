@@ -6,11 +6,12 @@ import { z } from "zod";
 import CueMap from "cuemap";
 import { EmbeddedCueMap } from "cuemap/embedded";
 import { File } from "node:buffer";
-import { readFileSync, statSync } from "node:fs";
+import { readFileSync, statSync, writeFileSync } from "node:fs";
 import path from "path";
 import { createHash } from "crypto";
 import { spawnSync } from "child_process";
 import { CueMapJobStatus, evaluateJobStatus } from "./job-status.js";
+import { memoryToolResult, recallToolResult } from "./recall-result.js";
 
 let embeddedEngine: EmbeddedCueMap | null = null;
 let CUEMAP_URL = process.env.CUEMAP_URL;
@@ -48,7 +49,7 @@ const DEFAULT_PROJECT = defaultProjectId(process.cwd());
 
 const server = new McpServer({
     name: "cuemap-mcp",
-    version: "0.7.2",
+    version: "0.7.3",
 });
 
 async function startEngine(): Promise<void> {
@@ -69,6 +70,9 @@ async function startEngine(): Promise<void> {
             "chunk_embeddings_v1",
             "intent_classification_v1",
             "intent_job_status_v1",
+            "project_lifecycle_v1",
+            "project_packages_v1",
+            "project_sync_v1",
         ],
         configPath: process.env.CUEMAP_CONFIG_PATH,
         apiKey: process.env.CUEMAP_API_KEY,
@@ -129,21 +133,38 @@ async function engineRequest<T>(
     body?: unknown,
     project?: string,
 ): Promise<T> {
+    const response = await engineRawRequest(
+        method,
+        requestPath,
+        body === undefined ? undefined : JSON.stringify(body),
+        project,
+        "application/json",
+    );
+    return await response.json() as T;
+}
+
+async function engineRawRequest(
+    method: "GET" | "POST" | "PATCH" | "DELETE",
+    requestPath: string,
+    body?: BodyInit,
+    project?: string,
+    contentType?: string,
+): Promise<Response> {
     if (!CUEMAP_URL) throw new Error("CueMap engine URL is not available");
     const response = await fetch(`${CUEMAP_URL}${requestPath}`, {
         method,
         headers: {
-            ...(body === undefined ? {} : { "content-type": "application/json" }),
+            ...(body === undefined || !contentType ? {} : { "content-type": contentType }),
             ...(process.env.CUEMAP_API_KEY ? { "X-API-Key": process.env.CUEMAP_API_KEY } : {}),
             ...(project ? { "X-Project-ID": project } : {}),
         },
-        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        ...(body === undefined ? {} : { body }),
     });
     if (!response.ok) {
         const message = await response.text();
         throw new Error(`CueMap returned HTTP ${response.status}: ${message}`);
     }
-    return await response.json() as T;
+    return response;
 }
 
 async function main() {
@@ -311,7 +332,7 @@ async function main() {
             inputSchema: z.object({
                 content: z.string().min(1).describe("The natural-language memory content to store."),
                 project: z.string().min(1).optional().describe("Optional project ID. Defaults to a stable ID derived from the current Git repository."),
-                cues: z.array(z.string()).optional().describe("Optional explicit cues/tags to associate with the memory."),
+                cues: z.array(z.string()).optional().describe("Normally omit: CueMap generates cues from content automatically. Optionally add deliberate reusable tags, e.g. type:conversation for an explicitly saved conversation."),
                 metadata: z.record(z.string(), z.unknown()).optional().describe("Optional JSON metadata to store with the memory."),
                 source_key: z.string().optional().describe("Optional stable source key for deterministic upsert/deduplication."),
                 event_time: z.number().nonnegative().optional().describe("Optional original event timestamp as Unix seconds. Defaults to ingestion time."),
@@ -432,7 +453,7 @@ async function main() {
     server.registerTool(
         "cuemap_projects",
         {
-            description: "List CueMap projects and their available summary metadata.",
+            description: "List CueMap projects, summary metadata, and whether each project is currently loaded in RAM.",
             inputSchema: z.object({}),
         },
         async () => {
@@ -440,6 +461,221 @@ async function main() {
                 return jsonToolResult(await client.listProjects());
             } catch (error) {
                 return toolError("cuemap_projects", error);
+            }
+        },
+    );
+
+    server.registerTool(
+        "cuemap_project_save",
+        {
+            description: "Persist the current state of a CueMap project without unloading it. Package operations save automatically; use this only when an explicit durable checkpoint is useful.",
+            inputSchema: z.object({
+                project: z.string().min(1).optional().describe("Project ID to save. Defaults to the repository-scoped project."),
+            }),
+        },
+        async (args) => {
+            try {
+                const project = args.project || DEFAULT_PROJECT;
+                return jsonToolResult(await engineRequest(
+                    "POST",
+                    `/projects/${encodeURIComponent(project)}/save`,
+                    undefined,
+                    project,
+                ));
+            } catch (error) {
+                return toolError("cuemap_project_save", error);
+            }
+        },
+    );
+
+    server.registerTool(
+        "cuemap_project_load",
+        {
+            description: "Load a persisted CueMap project into RAM before a latency-sensitive operation. Normal project requests load automatically, so use this for explicit warm-up.",
+            inputSchema: z.object({
+                project: z.string().min(1).optional().describe("Project ID to load. Defaults to the repository-scoped project."),
+            }),
+        },
+        async (args) => {
+            try {
+                const project = args.project || DEFAULT_PROJECT;
+                return jsonToolResult(await engineRequest(
+                    "POST",
+                    `/projects/${encodeURIComponent(project)}/load`,
+                    undefined,
+                    project,
+                ));
+            } catch (error) {
+                return toolError("cuemap_project_load", error);
+            }
+        },
+    );
+
+    server.registerTool(
+        "cuemap_project_unload",
+        {
+            description: "Persist and unload a CueMap project from RAM to reduce memory use. Use only when the user explicitly asks to unload or free inactive project memory; active projects return a retryable busy error.",
+            inputSchema: z.object({
+                project: z.string().min(1).optional().describe("Project ID to unload. Defaults to the repository-scoped project."),
+            }),
+        },
+        async (args) => {
+            try {
+                const project = args.project || DEFAULT_PROJECT;
+                return jsonToolResult(await engineRequest(
+                    "POST",
+                    `/projects/${encodeURIComponent(project)}/unload`,
+                    undefined,
+                    project,
+                ));
+            } catch (error) {
+                return toolError("cuemap_project_unload", error);
+            }
+        },
+    );
+
+    server.registerTool(
+        "cuemap_project_pack",
+        {
+            description: "Write a ready-to-query .cuemap package for one project to a local file. The package contains sensitive project content; use only after the user explicitly approves the exact output path.",
+            inputSchema: z.object({
+                project: z.string().min(1).optional().describe("Project ID to package. Defaults to the repository-scoped project."),
+                output_path: z.string().min(1).describe("Absolute local path for the .cuemap file."),
+                overwrite: z.boolean().optional().describe("Replace an existing output file. Default is false."),
+                confirmed: z.boolean().optional().describe("Must be true after explicit user approval of the output path and any overwrite."),
+            }),
+        },
+        async (args) => {
+            if (!args.confirmed) return confirmationRequired("project packaging");
+            try {
+                if (!path.isAbsolute(args.output_path)) {
+                    throw new Error("output_path must be absolute");
+                }
+                const project = args.project || DEFAULT_PROJECT;
+                const response = await engineRawRequest(
+                    "POST",
+                    `/projects/${encodeURIComponent(project)}/pack`,
+                    undefined,
+                    project,
+                );
+                const packageData = Buffer.from(await response.arrayBuffer());
+                writeFileSync(args.output_path, packageData, {
+                    flag: args.overwrite ? "w" : "wx",
+                });
+                return jsonToolResult({
+                    status: "packed",
+                    project_id: project,
+                    output_path: args.output_path,
+                    size_bytes: packageData.byteLength,
+                });
+            } catch (error) {
+                return toolError("cuemap_project_pack", error);
+            }
+        },
+    );
+
+    server.registerTool(
+        "cuemap_project_package_load",
+        {
+            description: "Install and warm a local .cuemap package. Use only after the user explicitly approves the exact package path; existing projects are never overwritten.",
+            inputSchema: z.object({
+                package_path: z.string().min(1).describe("Absolute local path to the .cuemap package."),
+                confirmed: z.boolean().optional().describe("Must be true after explicit user approval of the package path."),
+            }),
+        },
+        async (args) => {
+            if (!args.confirmed) return confirmationRequired("project package loading");
+            try {
+                if (!path.isAbsolute(args.package_path)) {
+                    throw new Error("package_path must be absolute");
+                }
+                const stats = statSync(args.package_path);
+                if (!stats.isFile()) throw new Error("package_path must reference a regular file");
+                const response = await engineRawRequest(
+                    "POST",
+                    "/projects/load",
+                    readFileSync(args.package_path),
+                    undefined,
+                    "application/vnd.cuemap.project",
+                );
+                return jsonToolResult(await response.json());
+            } catch (error) {
+                return toolError("cuemap_project_package_load", error);
+            }
+        },
+    );
+
+    server.registerTool(
+        "cuemap_project_push",
+        {
+            description: "Pack and upload a CueMap project with the engine host's configured AWS CLI. Use only after explicit approval of the exact S3 destination; an existing object at that URI may be replaced.",
+            inputSchema: z.object({
+                project: z.string().min(1).optional().describe("Project ID to push. Defaults to the repository-scoped project."),
+                destination: z.string().startsWith("s3://").describe("Exact S3 object URI or prefix."),
+                confirmed: z.boolean().optional().describe("Must be true after explicit user approval of the S3 destination."),
+            }),
+        },
+        async (args) => {
+            if (!args.confirmed) return confirmationRequired("project package upload");
+            try {
+                const project = args.project || DEFAULT_PROJECT;
+                return jsonToolResult(await engineRequest(
+                    "POST",
+                    `/projects/${encodeURIComponent(project)}/push`,
+                    { destination: args.destination },
+                    project,
+                ));
+            } catch (error) {
+                return toolError("cuemap_project_push", error);
+            }
+        },
+    );
+
+    server.registerTool(
+        "cuemap_project_pull",
+        {
+            description: "Download, install, and warm a .cuemap package with the engine host's configured AWS CLI. Use only after explicit approval of the exact S3 source; existing projects are never overwritten.",
+            inputSchema: z.object({
+                source: z.string().startsWith("s3://").describe("Exact S3 object URI for a .cuemap package."),
+                confirmed: z.boolean().optional().describe("Must be true after explicit user approval of the S3 source."),
+            }),
+        },
+        async (args) => {
+            if (!args.confirmed) return confirmationRequired("project package download and load");
+            try {
+                return jsonToolResult(await engineRequest(
+                    "POST",
+                    "/projects/pull",
+                    { source: args.source },
+                ));
+            } catch (error) {
+                return toolError("cuemap_project_pull", error);
+            }
+        },
+    );
+
+    server.registerTool(
+        "cuemap_project_sync",
+        {
+            description: "Fast-forward a project through immutable history at an S3 sync root. Pushes local-only changes, pulls remote-only changes, and refuses divergent histories or stale concurrent writes. Use only after explicit approval of the project and exact S3 root.",
+            inputSchema: z.object({
+                project: z.string().min(1).optional().describe("Project ID to synchronize. Defaults to the repository-scoped project."),
+                remote: z.string().startsWith("s3://").describe("Exact S3 root used for this project's sync history."),
+                confirmed: z.boolean().optional().describe("Must be true after explicit user approval of the project and S3 sync root."),
+            }),
+        },
+        async (args) => {
+            if (!args.confirmed) return confirmationRequired("project synchronization");
+            try {
+                const project = args.project || DEFAULT_PROJECT;
+                return jsonToolResult(await engineRequest(
+                    "POST",
+                    `/projects/${encodeURIComponent(project)}/sync`,
+                    { remote: args.remote },
+                    project,
+                ));
+            } catch (error) {
+                return toolError("cuemap_project_sync", error);
             }
         },
     );
@@ -469,7 +705,7 @@ async function main() {
     server.registerTool(
         "cuemap_memory_get",
         {
-            description: "Get one CueMap memory by numeric ID.",
+            description: "Get one stored memory as readable text with source metadata. Pass the memory_id and owning project_id from recall as memory_id and project. Does not expand neighbors or read live source files.",
             inputSchema: z.object({
                 memory_id: z.number().int().nonnegative().max(4_294_967_295),
                 project: z.string().min(1).optional().describe("Optional project ID. Defaults to the repository-scoped project."),
@@ -478,9 +714,9 @@ async function main() {
         async (args) => {
             try {
                 const project = args.project || DEFAULT_PROJECT;
-                return jsonToolResult(await engineRequest(
+                return memoryToolResult(await engineRequest(
                     "GET",
-                    `/memories/${args.memory_id}`,
+                    `/memories/${args.memory_id}?decoded=true`,
                     undefined,
                     project,
                 ));
@@ -575,7 +811,7 @@ async function main() {
                 filename: z.string().min(1).optional().describe("Logical source filename used for type detection. Default is content.txt."),
                 source_key: z.string().optional().describe("Stable source key for deterministic replacement or deduplication."),
                 metadata: z.record(z.string(), z.unknown()).optional(),
-                structural_cues: z.array(z.string()).optional(),
+                structural_cues: z.array(z.string()).optional().describe("Normally omit: CueMap extracts structural cues automatically. Optionally add reliable source structure or a reusable category such as type:conversation."),
                 embeddings: z.array(z.array(z.number()).nonempty()).optional().describe("Optional one-vector-per-produced-chunk embeddings."),
                 segmenter: z.enum(["sentence_window", "logical_block"]).optional(),
                 segment_window_size: z.number().int().positive().optional(),
@@ -832,15 +1068,17 @@ async function main() {
     server.registerTool(
         "cuemap_recall",
         {
-            description: "Recall ranked context from CueMap using lexical, semantic, or hybrid query signals. Hybrid is the engine default and uses the configured local encoder to rerank lexical candidates.",
+            description: "Recall evidence for a focused question; follow up with narrower queries as needed. Returns engine JSON with project_id and memory_id handles, source metadata, and requested diagnostics in text and structuredContent. Use handles with cuemap_memory_get when the stored record is needed. Hybrid locally reranks lexical candidates. Start with a small limit and depth 1; enable reconstruction only when surrounding evidence is needed.",
             inputSchema: z.object({
                 query: z.string().describe("The natural language query to search the codebase memory for."),
+                response_mode: z.enum(["full", "preview"]).optional().describe("Default full. Use preview for broad discovery to return only a leading excerpt per hit, with IDs and source metadata. Fetch promising stored memories with cuemap_memory_get; previews are not complete evidence."),
+                preview_chars: z.number().int().min(100).max(2000).optional().describe("Maximum leading content length per hit in preview mode (100–2000 UTF-16 code units; default 200). Does not cap metadata or diagnostics. Ignored in full mode."),
                 limit: z.number().optional().describe("Optional limit on the number of results to return. Default is 10."),
                 projects: z.array(z.string()).optional().describe("Optional list of project IDs to scope the search to. Provide multiple for cross-project recall. If not provided, searches the default project."),
-                cues: z.array(z.string()).optional().describe("Optional list of specific cues/tags to filter the search."),
+                cues: z.array(z.string()).optional().describe("Normally omit: CueMap generates cues from the query. Supply known tags only to deliberately narrow lexical/hybrid recall, e.g. type:conversation to search tagged conversations."),
                 query_time: z.string().optional().describe("Optional timestamp or natural-language time anchor used by v0.7 temporal query intent."),
                 depth: z.number().optional().describe("Depth of multi-hop recall. Default is 1."),
-                expansion_depth: z.number().optional().describe("Alias/cue expansion depth. Default is 1."),
+                expansion_depth: z.number().optional().describe("Neighbor context expansion. 1 returns the matched chunk; values above 1 include nearby parent chunks or source-ordered context with radius expansion_depth - 1 when linkage exists. Default is 1."),
                 auto_reinforce: z.boolean().optional().describe("Automatically reinforce retrieved memories. Default is false."),
                 min_intersection: z.number().optional().describe("Minimum intersection count for retrieval. Default is 0."),
                 explain: z.boolean().optional().describe("Include explain component for debug information in results. Default is false."),
@@ -868,6 +1106,7 @@ async function main() {
             try {
                 const {
                     query, limit = 10, projects, cues, query_time,
+                    response_mode = "full", preview_chars = 200,
                     depth = 1, expansion_depth = 1, auto_reinforce = false, min_intersection,
                     explain = false, trace_timing = false,
                     disable_salience_bias = false, disable_alias_expansion = true,
@@ -882,6 +1121,8 @@ async function main() {
 
                 const results = await client.recall({
                     query_text: query,
+                    response_mode,
+                    preview_chars,
                     cues,
                     projects,
                     limit,
@@ -911,56 +1152,11 @@ async function main() {
                     query_embedding,
                 } as any);
 
-                let items: any[] = [];
-
-                if (results.results && Array.isArray(results.results)) {
-                    if (results.results.length > 0 && results.results[0].project_id) {
-                        results.results.forEach((projectRes: any) => {
-                            if (projectRes.results && Array.isArray(projectRes.results)) {
-                                items = items.concat(projectRes.results.map((r: any) => ({ ...r, project_id: projectRes.project_id })));
-                            }
-                        });
-                    } else {
-                        items = results.results;
-                    }
-                }
-
-                if (!items || items.length === 0) {
-                    return {
-                        content: [
-                            {
-                                type: "text" as const,
-                                text: "No results found for the query in CueMap.",
-                            },
-                        ],
-                    };
-                }
-
-                let formattedText = `CueMap found ${items.length} relevant memories:\n\n`;
-                items.forEach((r: any, i: number) => {
-                    const scoreStr = r.score !== undefined ? ` (Score: ${Number(r.score).toFixed(2)})` : '';
-                    formattedText += `### Result ${i + 1}${scoreStr}\n`;
-                    const projectId = r.project_id || (projects && projects.length === 1 ? projects[0] : null);
-                    if (projectId) formattedText += `*Project: ${projectId}*\n`;
-                    if (r.timestamp) {
-                        const date = new Date(r.timestamp);
-                        formattedText += `*Timestamp: ${date.toISOString()}*\n`;
-                    } else if (r.created_at) {
-                        const date = new Date(r.created_at * 1000);
-                        formattedText += `*Timestamp: ${date.toISOString()}*\n`;
-                    }
-
-                    formattedText += `${r.content}\n\n`;
-                });
-
-                return {
-                    content: [
-                        {
-                            type: "text" as const,
-                            text: formattedText,
-                        },
-                    ],
-                };
+                return recallToolResult(
+                    results,
+                    !projects?.length ? DEFAULT_PROJECT : projects.length === 1 ? projects[0] : undefined,
+                    { response_mode },
+                );
             } catch (error: any) {
                 console.error("Error calling CueMap engine", error);
                 return {
