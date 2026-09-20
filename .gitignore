@@ -7,6 +7,7 @@ build/
 dist/
 out/
 .next/
+*.tgz
 
 # Debug and local files
 npm-debug.log*
