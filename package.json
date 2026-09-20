@@ -1,6 +1,7 @@
 {
   "name": "cuemap-mcp",
-  "version": "0.7.3",
+  "version": "0.7.4",
+  "mcpName": "io.github.cuemap-dev/cuemap-mcp",
   "description": "MCP server for CueMap",
   "main": "build/index.js",
   "bin": {
