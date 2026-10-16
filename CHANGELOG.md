@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.7.5] - 2026-10-14
+
+### Changed
+- Synchronized with CueMap Engine v0.7.5 and depends on `cuemap@0.7.5` and the 0.7.5 engine packages.
+- The recall tool no longer sends `expansion_depth: 1` by default, so the engine default applies: `"conversation_round"` adds the message each result replies to and the answer to the top result. The tool accepts `"conversation_round"` or a number.
+- The ingest tool accepts `segmenter: "conversation"` for chat histories.
+- Tool descriptions, README and skill guidance recommend leaving `expansion_depth` unset.
+
 ## [0.7.3] - 2026-08-27
 
 ### Changed
