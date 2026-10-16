@@ -2,7 +2,7 @@
   <img src="https://cuemap.dev/cuemap-logo.PNG" alt="CueMap" width="120">
 </p>
 
-<h1 align="center">CueMap MCP Server v0.7.3</h1>
+<h1 align="center">CueMap MCP Server v0.7.5</h1>
 
 <p align="center">A premium MCP bridge for explainable, repository-aware agent memory.</p>
 
@@ -154,7 +154,7 @@ These tools are for explicit ingestion requests. Repository initialization conti
   - `cues` (string[], optional): Specific cue tags to filter the search.
   - `query_time` (string, optional): Timestamp or natural-language time anchor for v0.7 temporal query intent.
   - `depth` (number, optional): Depth of multi-hop recall expander (default: 1).
-  - `expansion_depth` (number, optional): Neighbor context expansion (default: 1). Values above 1 include nearby parent chunks or source-ordered context, using a radius of `expansion_depth - 1` when linkage exists.
+  - `expansion_depth` (number or `"conversation_round"`, optional): Neighbor context expansion (default: `"conversation_round"`). Values above 1 include nearby parent chunks or source-ordered context, using a radius of `expansion_depth - 1` when linkage exists. `"conversation_round"` prepends the message each result replies to (for an assistant reply, the user message that prompted it) when memories carry session, turn and role metadata, for example after ingesting with `segmenter: "conversation"`. The top result also gets the message that replies to it (for a user message, the assistant's answer). Memories without conversation metadata are returned as they are; pass `1` for matched memories only. A message that would also appear lower in the results is moved up instead of repeated, so fewer than `limit` results can come back.
   - `auto_reinforce` (boolean, optional): Automatically reinforce retrieved memories (default: false).
   - `min_intersection` (number, optional): Minimum required cue intersection count (default: 0).
   - `explain` (boolean, optional): Include scoring explanation data in results (default: false).

@@ -362,10 +362,13 @@ Start with defaults. Add only the knobs that match the question.
   evidence. Unnecessary constraints can exclude useful results.
 - `depth`: keep at `1` for direct questions. Use `2` or `3` for a deliberate
   multi-hop chain; increase gradually and verify each hop.
-- `expansion_depth`: keep at `1` for the matched chunk alone. Use `2` to
-  include immediate neighboring parent chunks or source-ordered context when
-  linkage exists; larger values widen the window. This expands returned
-  content, not aliases, and adds reads and tokens to each affected hit.
+- `expansion_depth`: leave it unset. The default, `"conversation_round"`,
+  attaches the message a result replies to, and the answer to the top result,
+  when memories carry conversation metadata (for example after ingesting with
+  `segmenter: "conversation"`); other memories come back unchanged. Use `1`
+  for the matched chunk alone and the smallest output. Use `2` or more to
+  include neighboring parent chunks or source-ordered context when linkage
+  exists; this adds reads and tokens to each affected hit.
 - `disable_alias_expansion`: it defaults to `true` in the MCP wrapper. Keep it
   disabled when exactness matters. Set it to `false` only when the project has
   trustworthy aliases or the user explicitly wants related terminology.
@@ -564,7 +567,7 @@ Obtain confirmation from the user in the current interaction.
 ## Performance-aware defaults
 
 For the normal hot path, use hybrid recall with a focused query, one explicit
-project, `limit` around 3–5 initially, `depth: 1`, `expansion_depth: 1`, no automatic
+project, `limit` around 3–5 initially, `depth: 1`, the default `expansion_depth`, no automatic
 reinforcement, and no reconstruction mode unless the question needs it. Keep
 `explain` and `trace_timing` off after diagnosis.
 
@@ -577,9 +580,9 @@ semantic-model-free in the default hybrid path.
 ## Configuration and troubleshooting
 
 The MCP server launches over stdio and normally starts or attaches to a local
-embedded engine. The v0.7.3 defaults are:
+embedded engine. The v0.7.5 defaults are:
 
-- package: `cuemap-mcp@0.7.3`;
+- package: `cuemap-mcp@0.7.5`;
 - engine port: `8735`;
 - default project: stable repository-scoped identity when available;
 - logs: `~/.cuemap/server.log` unless overridden.

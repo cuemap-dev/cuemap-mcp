@@ -49,7 +49,7 @@ const DEFAULT_PROJECT = defaultProjectId(process.cwd());
 
 const server = new McpServer({
     name: "cuemap-mcp",
-    version: "0.7.3",
+    version: "0.7.5",
 });
 
 async function startEngine(): Promise<void> {
@@ -813,7 +813,7 @@ async function main() {
                 metadata: z.record(z.string(), z.unknown()).optional(),
                 structural_cues: z.array(z.string()).optional().describe("Normally omit: CueMap extracts structural cues automatically. Optionally add reliable source structure or a reusable category such as type:conversation."),
                 embeddings: z.array(z.array(z.number()).nonempty()).optional().describe("Optional one-vector-per-produced-chunk embeddings."),
-                segmenter: z.enum(["sentence_window", "logical_block"]).optional(),
+                segmenter: z.enum(["sentence_window", "logical_block", "conversation"]).optional().describe("How content is split. \"conversation\" is for chat histories (Claude or ChatGPT exports, JSON message lists, or transcripts whose lines start with User:/Assistant: or speaker names): one memory per message with conversation, turn and role metadata, which recall's expansion_depth \"conversation_round\" uses."),
                 segment_window_size: z.number().int().positive().optional(),
                 segment_overlap: z.number().int().nonnegative().optional(),
                 segment_min_chunk_chars: z.number().int().positive().optional(),
@@ -1078,7 +1078,7 @@ async function main() {
                 cues: z.array(z.string()).optional().describe("Normally omit: CueMap generates cues from the query. Supply known tags only to deliberately narrow lexical/hybrid recall, e.g. type:conversation to search tagged conversations."),
                 query_time: z.string().optional().describe("Optional timestamp or natural-language time anchor used by v0.7 temporal query intent."),
                 depth: z.number().optional().describe("Depth of multi-hop recall. Default is 1."),
-                expansion_depth: z.number().optional().describe("Neighbor context expansion. 1 returns the matched chunk; values above 1 include nearby parent chunks or source-ordered context with radius expansion_depth - 1 when linkage exists. Default is 1."),
+                expansion_depth: z.union([z.number(), z.literal("conversation_round")]).optional().describe("Neighbor context expansion. 1 returns the matched chunk; values above 1 include nearby parent chunks or source-ordered context with radius expansion_depth - 1 when linkage exists. \"conversation_round\" prepends the message each result replies to (for an assistant reply, the user message that prompted it) and appends the answer to the top result when memories carry session, turn and role metadata. Default is \"conversation_round\"; memories without that metadata are returned as they are."),
                 auto_reinforce: z.boolean().optional().describe("Automatically reinforce retrieved memories. Default is false."),
                 min_intersection: z.number().optional().describe("Minimum intersection count for retrieval. Default is 0."),
                 explain: z.boolean().optional().describe("Include explain component for debug information in results. Default is false."),
@@ -1107,7 +1107,7 @@ async function main() {
                 const {
                     query, limit = 10, projects, cues, query_time,
                     response_mode = "full", preview_chars = 200,
-                    depth = 1, expansion_depth = 1, auto_reinforce = false, min_intersection,
+                    depth = 1, expansion_depth, auto_reinforce = false, min_intersection,
                     explain = false, trace_timing = false,
                     disable_salience_bias = false, disable_alias_expansion = true,
                     parent_fusion = "off", parent_fusion_limit = 80,
